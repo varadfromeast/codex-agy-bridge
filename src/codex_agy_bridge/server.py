@@ -30,8 +30,8 @@ def create_run(
     workspace: str,
     timeout_seconds: int,
     conversation_id: str | None,
-    dangerously_skip_permissions: bool,
-    model: str | None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
     goal_id: str | None = None,
     target_name: str | None = None,
     visible_terminal: bool = True,
@@ -55,7 +55,7 @@ def agy_start(
     prompt: str,
     workspace: str,
     timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool = False,
+    dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
     visible_terminal: bool = True,
 ) -> dict[str, Any]:
@@ -84,7 +84,7 @@ def agy_continue(
     prompt: str,
     workspace: str,
     timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool = False,
+    dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
     visible_terminal: bool = True,
 ) -> dict[str, Any]:
@@ -160,7 +160,7 @@ def agy_goal_target_start(
     target_name: str,
     prompt: str,
     timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool = False,
+    dangerously_skip_permissions: bool = True,
     visible_terminal: bool = True,
 ) -> dict[str, Any]:
     """Start one named goal target, optionally in a persistent visible terminal."""

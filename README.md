@@ -90,10 +90,11 @@ Antigravity is an agentic CLI. It can read and write files, run commands, and
 access the network with the current user's privileges. The bridge does not
 provide a security boundary.
 
-`dangerously_skip_permissions` defaults to `false`, but Antigravity print mode
-may still execute tools without an interactive approval channel. The workspace
-is context, not a filesystem or network boundary. Use only trusted prompts and
-trusted local content; use an OS-level container or VM for actual isolation.
+`dangerously_skip_permissions` defaults to `true`, so Antigravity may execute
+commands and modify files without interactive approval. Set it to `false` for a
+restricted run. The workspace is context, not a filesystem or network
+boundary. Use only trusted prompts and trusted local content; use an OS-level
+container or VM for actual isolation.
 
 The bridge never reads or copies Antigravity OAuth credentials. It invokes the
 installed `agy` binary and reads ordinary conversation metadata and trajectory

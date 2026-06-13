@@ -44,7 +44,21 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     assert start.outputSchema is not None
     assert start.outputSchema["type"] == "object"
     assert start.inputSchema["properties"]["visible_terminal"]["default"] is True
+    assert (
+        start.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
+        is True
+    )
     continuation = next(tool for tool in tools.tools if tool.name == "agy_continue")
     assert continuation.inputSchema["properties"]["visible_terminal"]["default"] is True
+    assert (
+        continuation.inputSchema["properties"]["dangerously_skip_permissions"][
+            "default"
+        ]
+        is True
+    )
     target = next(tool for tool in tools.tools if tool.name == "agy_goal_target_start")
     assert target.inputSchema["properties"]["visible_terminal"]["default"] is True
+    assert (
+        target.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
+        is True
+    )
