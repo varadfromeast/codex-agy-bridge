@@ -36,10 +36,11 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
         "agy_result",
         "agy_cancel",
         "agy_goal_create",
-        "agy_goal_target_start",
-        "agy_goal_status",
-        "agy_target_open_terminal",
-    }
+            "agy_goal_target_start",
+            "agy_goal_status",
+            "agy_target_open_terminal",
+            "agy_target_send_text",
+        }
     start = next(tool for tool in tools.tools if tool.name == "agy_start")
     assert start.outputSchema is not None
     assert start.outputSchema["type"] == "object"

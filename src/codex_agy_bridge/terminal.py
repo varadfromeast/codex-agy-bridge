@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -16,9 +17,43 @@ def launch(
     *,
     workspace: str,
     terminal_log: Path,
+    progress_log: Path,
+    stdout_log: Path,
+    stderr_log: Path,
 ) -> None:
+    script = "\n".join(
+        [
+            "set -u",
+            f"{shlex.join(command)} >> {shlex.quote(str(stdout_log))} "
+            f"2>> {shlex.quote(str(stderr_log))} &",
+            "agy_pid=$!",
+            f"tail -n +1 -F {shlex.quote(str(progress_log))} &",
+            "tail_pid=$!",
+            "cleanup() {",
+            '  kill "$agy_pid" "$tail_pid" 2>/dev/null || true',
+            "}",
+            "trap cleanup HUP INT TERM",
+            'wait "$agy_pid"',
+            "status=$?",
+            "sleep 1",
+            'kill "$tail_pid" 2>/dev/null || true',
+            'wait "$tail_pid" 2>/dev/null || true',
+            "exit $status",
+        ]
+    )
     subprocess.run(
-        ["tmux", "new-session", "-d", "-s", session, "-c", workspace, *command],
+        [
+            "tmux",
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-c",
+            workspace,
+            "sh",
+            "-c",
+            script,
+        ],
         check=True,
     )
     subprocess.run(
@@ -62,3 +97,13 @@ def alive(session: str) -> bool:
 
 def stop(session: str) -> None:
     subprocess.run(["tmux", "kill-session", "-t", session], check=False)
+
+
+def send_text(session: str, text: str, *, enter: bool = True) -> None:
+    if not alive(session):
+        raise ValueError(f"tmux session is not running: {session}")
+    if "\x00" in text:
+        raise ValueError("text must not contain NUL bytes")
+    subprocess.run(["tmux", "send-keys", "-t", session, "--", text], check=True)
+    if enter:
+        subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True)

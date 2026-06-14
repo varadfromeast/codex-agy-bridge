@@ -10,3 +10,9 @@ def test_create_run_defaults_to_visible_terminal():
 
     assert parameters["visible_terminal"].default is True
     assert parameters["dangerously_skip_permissions"].default is True
+
+
+def test_send_text_defaults_to_press_enter():
+    parameters = inspect.signature(server.agy_target_send_text).parameters
+
+    assert parameters["enter"].default is True

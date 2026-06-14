@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -15,11 +16,13 @@ from pathlib import Path
 from codex_agy_bridge import terminal
 from codex_agy_bridge.core import (
     clean_response,
+    compact_steps,
     conversation_for_prompt_after,
     conversation_for_workspace,
     final_response,
     load_state,
     run_dir,
+    run_provider_health,
     update_state,
 )
 
@@ -65,6 +68,7 @@ def launch_process(
     workspace: str,
     stdout: object,
     stderr: object,
+    progress_log: Path | None = None,
 ) -> subprocess.Popen[bytes] | None:
     session = state.get("tmux_session")
     if not session:
@@ -81,8 +85,53 @@ def launch_process(
         command,
         workspace=workspace,
         terminal_log=run_dir(str(state["run_id"])) / "terminal.log",
+        progress_log=progress_log
+        or run_dir(str(state["run_id"])) / "terminal-progress.log",
+        stdout_log=run_dir(str(state["run_id"])) / "agy.stdout.log",
+        stderr_log=run_dir(str(state["run_id"])) / "agy.stderr.log",
     )
     return None
+
+
+def append_terminal_progress(
+    conversation_id: str,
+    *,
+    after_step: int,
+    progress_log: Path,
+) -> int:
+    steps = compact_steps(
+        conversation_id,
+        after_step=after_step,
+        limit=200,
+        include_content=True,
+        max_content_chars=8000,
+    )
+    if not steps:
+        return after_step
+
+    with progress_log.open("a", encoding="utf-8") as handle:
+        for step in steps:
+            index = int(step["step_index"])
+            created_at = str(step.get("created_at") or "")
+            timestamp = created_at[11:19] if len(created_at) >= 19 else created_at
+            handle.write(
+                f"\n[{timestamp}] step {index} "
+                f"{step.get('type')} {step.get('status')}\n"
+            )
+            for tool_call in step.get("tool_calls", []):
+                if not isinstance(tool_call, dict):
+                    continue
+                handle.write(f"tool: {tool_call.get('name', 'unknown')}\n")
+                arguments = tool_call.get("args")
+                if arguments:
+                    handle.write(
+                        json.dumps(arguments, indent=2, ensure_ascii=False) + "\n"
+                    )
+            content = step.get("content")
+            if content:
+                handle.write(str(content) + "\n")
+            handle.flush()
+    return int(steps[-1]["step_index"])
 
 
 def run_active(process: subprocess.Popen[bytes] | None, session: str | None) -> bool:
@@ -129,11 +178,16 @@ def run(run_id: str) -> int:
     workspace = str(state["workspace"])
     output_path = run_dir(run_id) / "agy.stdout.log"
     error_path = run_dir(run_id) / "agy.stderr.log"
+    progress_path = run_dir(run_id) / "terminal-progress.log"
     cancel_path = run_dir(run_id) / "cancel"
 
     try:
         command = build_command(state)
         launched_at = time.time()
+        progress_path.write_text(
+            "Starting Antigravity. Waiting for transcript events...\n",
+            encoding="utf-8",
+        )
         with output_path.open("ab") as stdout, error_path.open("ab") as stderr:
             process = launch_process(
                 state,
@@ -141,6 +195,7 @@ def run(run_id: str) -> int:
                 workspace=workspace,
                 stdout=stdout,
                 stderr=stderr,
+                progress_log=progress_path,
             )
             session = str(state["tmux_session"]) if state.get("tmux_session") else None
             if session and state.get("visible_terminal"):
@@ -160,6 +215,7 @@ def run(run_id: str) -> int:
             previous_conversation_id = state.get("previous_conversation_id")
             marker_response: str | None = None
             marker_seen_at: float | None = None
+            last_terminal_step = -1
             while run_active(process, session):
                 if cancel_path.exists():
                     stop_run(process, session)
@@ -181,6 +237,12 @@ def run(run_id: str) -> int:
                     if observed_id:
                         conversation_id = observed_id
                         update_state(run_id, conversation_id=conversation_id)
+                if conversation_id and session:
+                    last_terminal_step = append_terminal_progress(
+                        str(conversation_id),
+                        after_step=last_terminal_step,
+                        progress_log=progress_path,
+                    )
                 response = (
                     final_response(str(conversation_id)) if conversation_id else None
                 )
@@ -235,9 +297,23 @@ def run(run_id: str) -> int:
         elif return_code == 0 and response:
             status, error = "completed", None
         elif return_code == 0:
-            status, error = "failed", "agy exited without a completed response"
+            health = run_provider_health(run_dir(run_id))
+            if health["status"] in {
+                "auth_interaction_required",
+                "response_timeout",
+            }:
+                action = health.get("action", "Inspect the visible terminal.")
+                error = (
+                    "agy exited without a completed response "
+                    f"because provider health is {health['status']}. {action}"
+                )
+                status = "failed"
+            else:
+                status = "failed"
+                error = "agy exited without a completed response"
         else:
-            status, error = "failed", f"agy exited with status {return_code}"
+            status = "failed"
+            error = f"agy exited with status {return_code}"
         update_state(
             run_id,
             status=status,

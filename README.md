@@ -31,7 +31,10 @@ The default is `Gemini 3.5 Flash (Medium)`.
 
 Runs open in a persistent `tmux` session by default. Terminal.app attaches to
 that session for user visibility; closing the terminal only detaches the view
-and does not stop the target. Set `visible_terminal=false` for headless runs.
+and does not stop the target. The visible pane streams sanitized Antigravity
+transcript events, including tool calls and command output, instead of raw
+cursor-control output from print mode. Set `visible_terminal=false` for
+headless runs.
 
 Goals group named targets and permit bounded parallel work. Parallelism is
 capped at three globally and may be lowered per goal.

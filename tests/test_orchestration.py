@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from codex_agy_bridge import orchestration
+
+
+def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    existing = {
+        "run_id": "run-existing",
+        "status": "running",
+        "workspace": str(workspace),
+        "prompt": "Review the pull request",
+        "requested_conversation_id": None,
+        "dangerously_skip_permissions": True,
+        "model": orchestration.DEFAULT_MODEL,
+        "goal_id": None,
+        "target_name": None,
+        "visible_terminal": True,
+        "request_key": orchestration._request_key(
+            prompt="Review the pull request",
+            workspace=str(workspace),
+            timeout_seconds=900,
+            conversation_id=None,
+            dangerously_skip_permissions=True,
+            model=orchestration.DEFAULT_MODEL,
+            goal_id=None,
+            target_name=None,
+            visible_terminal=True,
+        ),
+    }
+    spawned = []
+
+    monkeypatch.setattr(orchestration, "STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(orchestration, "active_runs", lambda: [existing])
+    monkeypatch.setattr(
+        orchestration.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: spawned.append(True),
+    )
+
+    state = orchestration.create_run(
+        prompt="Review the pull request",
+        workspace=str(workspace),
+        timeout_seconds=900,
+        conversation_id=None,
+        visible_terminal=True,
+    )
+
+    assert state == existing
+    assert spawned == []
+
+
+def test_send_text_uses_visible_run_tmux_session(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        orchestration,
+        "load_state",
+        lambda _run_id: {"run_id": "run-1", "tmux_session": "agy-target"},
+    )
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "send_text",
+        lambda session, text, *, enter=True: sent.append((session, text, enter)),
+    )
+
+    result = orchestration.send_text("run-1", "yes")
+
+    assert sent == [("agy-target", "yes", True)]
+    assert result["sent"] is True

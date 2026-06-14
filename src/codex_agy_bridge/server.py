@@ -189,6 +189,16 @@ def agy_target_open_terminal(run_id: str) -> dict[str, Any]:
     return orchestration.open_terminal(run_id)
 
 
+@mcp.tool()
+def agy_target_send_text(
+    run_id: str,
+    text: str,
+    enter: bool = True,
+) -> dict[str, Any]:
+    """Send text to a visible target's persistent tmux session."""
+    return orchestration.send_text(run_id, text, enter=enter)
+
+
 def main() -> None:
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     register_server_instance(STATE_ROOT)

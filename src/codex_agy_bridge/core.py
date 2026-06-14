@@ -155,9 +155,41 @@ def provider_health(log_path: Path) -> dict[str, Any]:
         return {"status": "rate_limited"}
     if "applyauthresult:" in text:
         return {"status": "authenticated"}
+    if (
+        "failed to get oauth token" in text
+        or "oauth token" in text
+        or "not logged into antigravity" in text
+    ):
+        return {
+            "status": "auth_interaction_required",
+            "action": (
+                "Open the visible terminal or send `yes` to the run's tmux "
+                "session, then retry if authentication does not resume."
+            ),
+        }
     if "you are not logged into antigravity" in text:
         return {"status": "auth_unavailable"}
     return {"status": "unknown"}
+
+
+def run_provider_health(directory: Path) -> dict[str, Any]:
+    """Classify provider health using both Antigravity logs and print output."""
+    health = provider_health(directory / "agy.log")
+    if health["status"] != "unknown":
+        return health
+    stdout_path = directory / "agy.stdout.log"
+    if not stdout_path.exists():
+        return health
+    text = stdout_path.read_text(encoding="utf-8", errors="replace")[-20_000:].lower()
+    if "timed out waiting for response" in text:
+        return {
+            "status": "response_timeout",
+            "action": (
+                "If the visible terminal is waiting for confirmation, call "
+                "agy_target_send_text with text='yes'."
+            ),
+        }
+    return health
 
 
 def conversation_for_workspace(workspace: str) -> str | None:

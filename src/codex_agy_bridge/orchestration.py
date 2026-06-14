@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -27,9 +29,9 @@ from codex_agy_bridge.core import (
     load_goal,
     load_state,
     process_alive,
-    provider_health,
     public_state,
     run_dir,
+    run_provider_health,
     state_path,
     transcript_path,
     update_goal,
@@ -40,6 +42,33 @@ from codex_agy_bridge.state import ACTIVE_STATUSES, GoalState, RunState
 
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 3
+
+
+def _request_key(
+    *,
+    prompt: str,
+    workspace: str,
+    timeout_seconds: int,
+    conversation_id: str | None,
+    dangerously_skip_permissions: bool,
+    model: str,
+    goal_id: str | None,
+    target_name: str | None,
+    visible_terminal: bool,
+) -> str:
+    payload = {
+        "prompt": prompt.rstrip(),
+        "workspace": workspace,
+        "timeout_seconds": timeout_seconds,
+        "conversation_id": conversation_id,
+        "dangerously_skip_permissions": dangerously_skip_permissions,
+        "model": model,
+        "goal_id": goal_id,
+        "target_name": target_name,
+        "visible_terminal": visible_terminal,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def create_run(
@@ -61,9 +90,27 @@ def create_run(
         raise ValueError(f"workspace is not a directory: {root}")
     if timeout_seconds < 10 or timeout_seconds > 86400:
         raise ValueError("timeout_seconds must be between 10 and 86400")
+    effective_model = model or DEFAULT_MODEL
+    request_key = _request_key(
+        prompt=prompt,
+        workspace=str(root),
+        timeout_seconds=timeout_seconds,
+        conversation_id=conversation_id,
+        dangerously_skip_permissions=dangerously_skip_permissions,
+        model=effective_model,
+        goal_id=goal_id,
+        target_name=target_name,
+        visible_terminal=visible_terminal,
+    )
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     with FileLock(str(STATE_ROOT / "start.lock"), timeout=10):
         running = active_runs()
+        duplicate = next(
+            (state for state in running if state.get("request_key") == request_key),
+            None,
+        )
+        if duplicate is not None:
+            return duplicate
         max_parallel = int(
             os.environ.get("AGY_BRIDGE_MAX_PARALLEL", DEFAULT_MAX_PARALLEL)
         )
@@ -102,10 +149,11 @@ def create_run(
             ),
             "conversation_id": conversation_id,
             "dangerously_skip_permissions": dangerously_skip_permissions,
-            "model": model or DEFAULT_MODEL,
+            "model": effective_model,
             "goal_id": goal_id,
             "target_name": target_name,
             "visible_terminal": visible_terminal,
+            "request_key": request_key,
             "tmux_session": terminal.session_name(run_id) if visible_terminal else None,
             "runner_pid": None,
             "agy_pid": None,
@@ -157,10 +205,10 @@ def status(run_id: str, *, compact: bool = True) -> dict[str, Any]:
             "error": state.get("error"),
             "created_at": state.get("created_at"),
             "updated_at": state.get("updated_at"),
-            "finished_at": state.get("finished_at"),
-            "latest_step": latest_step(conversation_id) if conversation_id else None,
-            "provider_health": provider_health(run_dir(run_id) / "agy.log"),
-        }
+        "finished_at": state.get("finished_at"),
+        "latest_step": latest_step(conversation_id) if conversation_id else None,
+        "provider_health": run_provider_health(run_dir(run_id)),
+    }
     result = dict(state)
     result["paths"] = {
         "run_directory": str(run_dir(run_id)),
@@ -168,6 +216,7 @@ def status(run_id: str, *, compact: bool = True) -> dict[str, Any]:
         "agy_log": str(run_dir(run_id) / "agy.log"),
         "stdout": str(run_dir(run_id) / "agy.stdout.log"),
         "stderr": str(run_dir(run_id) / "agy.stderr.log"),
+        "terminal_progress": str(run_dir(run_id) / "terminal-progress.log"),
     }
     conversation_id = state.get("conversation_id")
     if conversation_id:
@@ -316,3 +365,11 @@ def open_terminal(run_id: str) -> dict[str, Any]:
         raise ValueError("run was not started with visible_terminal=true")
     terminal.attach(session, check=True)
     return {"run_id": run_id, "tmux_session": session, "opened": True}
+
+
+def send_text(run_id: str, text: str, *, enter: bool = True) -> dict[str, Any]:
+    session = load_state(run_id).get("tmux_session")
+    if not session:
+        raise ValueError("run was not started with visible_terminal=true")
+    terminal.send_text(str(session), text, enter=enter)
+    return {"run_id": run_id, "tmux_session": session, "sent": True, "enter": enter}

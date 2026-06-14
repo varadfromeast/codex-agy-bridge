@@ -116,7 +116,53 @@ def test_launch_process_uses_tmux_for_visible_target(monkeypatch, tmp_path):
         "agy-target",
         "-c",
         str(tmp_path),
-        "/usr/local/bin/agy",
-        "--print",
-        "work",
+        "sh",
+        "-c",
+        calls[0][0][-1],
     ]
+    assert "/usr/local/bin/agy --print work" in calls[0][0][-1]
+    assert "tail -n +1 -F" in calls[0][0][-1]
+
+
+def test_append_terminal_progress_renders_sanitized_events(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runner,
+        "compact_steps",
+        lambda *_args, **_kwargs: [
+            {
+                "step_index": 7,
+                "created_at": "2026-06-13T10:33:23Z",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "tool_calls": [
+                    {
+                        "name": "run_command",
+                        "args": {"CommandLine": "pytest"},
+                    }
+                ],
+            },
+            {
+                "step_index": 8,
+                "created_at": "2026-06-13T10:33:24Z",
+                "type": "RUN_COMMAND",
+                "status": "DONE",
+                "content": "257 passed",
+            },
+        ],
+    )
+    progress_log = tmp_path / "terminal-progress.log"
+
+    latest = runner.append_terminal_progress(
+        "conversation-1",
+        after_step=6,
+        progress_log=progress_log,
+    )
+
+    assert latest == 8
+    assert progress_log.read_text(encoding="utf-8") == (
+        "\n[10:33:23] step 7 PLANNER_RESPONSE DONE\n"
+        "tool: run_command\n"
+        '{\n  "CommandLine": "pytest"\n}\n'
+        "\n[10:33:24] step 8 RUN_COMMAND DONE\n"
+        "257 passed\n"
+    )

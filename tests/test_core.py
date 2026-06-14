@@ -197,7 +197,7 @@ def test_removes_internal_completion_marker():
 def test_classifies_provider_health_from_recent_log(tmp_path):
     log = tmp_path / "agy.log"
     log.write_text("You are not logged into Antigravity\n", encoding="utf-8")
-    assert core.provider_health(log) == {"status": "auth_unavailable"}
+    assert core.provider_health(log)["status"] == "auth_interaction_required"
 
     log.write_text(
         "You are not logged into Antigravity\napplyAuthResult: consumer\n",
@@ -207,3 +207,15 @@ def test_classifies_provider_health_from_recent_log(tmp_path):
 
     log.write_text("RESOURCE_EXHAUSTED quota exhausted\n", encoding="utf-8")
     assert core.provider_health(log) == {"status": "quota_exhausted"}
+
+
+def test_run_provider_health_reports_response_timeout_action(tmp_path):
+    (tmp_path / "agy.stdout.log").write_text(
+        "Error: timed out waiting for response\n",
+        encoding="utf-8",
+    )
+
+    health = core.run_provider_health(tmp_path)
+
+    assert health["status"] == "response_timeout"
+    assert "agy_target_send_text" in health["action"]
