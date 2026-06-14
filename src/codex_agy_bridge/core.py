@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from filelock import FileLock
 
+from codex_agy_bridge.exceptions import RunNotFoundError
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
     GoalState,
@@ -42,23 +45,23 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def run_dir(run_id: str) -> Path:
-    return STATE_ROOT / "runs" / run_id
+def run_dir(run_id: str, state_root: Path | None = None) -> Path:
+    return (state_root or STATE_ROOT) / "runs" / run_id
 
 
-def goal_dir(goal_id: str) -> Path:
-    return STATE_ROOT / "goals" / goal_id
+def goal_dir(goal_id: str, state_root: Path | None = None) -> Path:
+    return (state_root or STATE_ROOT) / "goals" / goal_id
 
 
-def goal_path(goal_id: str) -> Path:
-    return goal_dir(goal_id) / "state.json"
+def goal_path(goal_id: str, state_root: Path | None = None) -> Path:
+    return goal_dir(goal_id, state_root) / "state.json"
 
 
-def state_path(run_id: str) -> Path:
-    return run_dir(run_id) / "state.json"
+def state_path(run_id: str, state_root: Path | None = None) -> Path:
+    return run_dir(run_id, state_root) / "state.json"
 
 
-def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -71,37 +74,57 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
-def load_state(run_id: str) -> RunState:
-    path = state_path(run_id)
+def load_state(run_id: str, state_root: Path | None = None) -> RunState:
+    path = state_path(run_id, state_root)
     if not path.exists():
-        raise FileNotFoundError(f"Unknown run_id: {run_id}")
+        raise RunNotFoundError(f"Unknown run_id: {run_id}")
     return validate_run_state(json.loads(path.read_text(encoding="utf-8")))
 
 
-def update_state(run_id: str, **changes: Any) -> RunState:
-    lock = FileLock(str(run_dir(run_id) / "state.lock"), timeout=10)
+def update_state(
+    run_id: str, state_root: Path | None = None, **changes: Any
+) -> RunState:
+    """Update run state fields under an exclusive file lock.
+
+    The active/ registry sentinel is managed solely by
+    :class:`~codex_agy_bridge.store.DiskRunStore`, which is always the
+    caller's storage layer when a store adapter is in use.  This function
+    handles the raw-filesystem path (no store) and therefore also cleans
+    the sentinel when transitioning to a terminal status, keeping the two
+    code paths consistent.
+    """
+    lock = FileLock(str(run_dir(run_id, state_root) / "state.lock"), timeout=10)
     with lock:
-        state = load_state(run_id)
-        state.update(changes)
+        state = load_state(run_id, state_root)
+        cast(dict[str, Any], state).update(changes)
         state["updated_at"] = utc_now()
-        atomic_write_json(state_path(run_id), state)
+        atomic_write_json(state_path(run_id, state_root), state)
+        # Sentinel cleanup: only needed when called outside the store layer
+        # (e.g. directly from runner.py).  DiskRunStore.save_run handles
+        # this itself, but a second unlink() is idempotent and safe.
+        if state.get("status") in TERMINAL_STATUSES:
+            active_file = (state_root or STATE_ROOT) / "active" / run_id
+            with suppress(OSError):
+                active_file.unlink()
         return validate_run_state(state)
 
 
-def load_goal(goal_id: str) -> GoalState:
-    path = goal_path(goal_id)
+def load_goal(goal_id: str, state_root: Path | None = None) -> GoalState:
+    path = goal_path(goal_id, state_root)
     if not path.exists():
         raise FileNotFoundError(f"Unknown goal_id: {goal_id}")
     return validate_goal_state(json.loads(path.read_text(encoding="utf-8")))
 
 
-def update_goal(goal_id: str, **changes: Any) -> GoalState:
-    lock = FileLock(str(goal_dir(goal_id) / "state.lock"), timeout=10)
+def update_goal(
+    goal_id: str, state_root: Path | None = None, **changes: Any
+) -> GoalState:
+    lock = FileLock(str(goal_dir(goal_id, state_root) / "state.lock"), timeout=10)
     with lock:
-        state = load_goal(goal_id)
-        state.update(changes)
+        state = load_goal(goal_id, state_root)
+        cast(dict[str, Any], state).update(changes)
         state["updated_at"] = utc_now()
-        atomic_write_json(goal_path(goal_id), state)
+        atomic_write_json(goal_path(goal_id, state_root), state)
         return validate_goal_state(state)
 
 
@@ -120,22 +143,29 @@ def process_alive(pid: int | None) -> bool:
     return True
 
 
-def active_runs() -> list[RunState]:
-    runs_root = STATE_ROOT / "runs"
-    if not runs_root.exists():
+def active_runs(state_root: Path | None = None) -> list[RunState]:
+    from contextlib import suppress
+
+    actual_state_root = state_root or STATE_ROOT
+    active_dir = actual_state_root / "active"
+    if not active_dir.exists():
         return []
     active: list[RunState] = []
-    for path in runs_root.glob("*/state.json"):
+    for path in active_dir.iterdir():
+        if not path.is_file():
+            continue
+        run_id = path.name
         try:
-            state = validate_run_state(json.loads(path.read_text(encoding="utf-8")))
+            state = load_state(run_id, actual_state_root)
         except (OSError, json.JSONDecodeError, ValueError):
+            with suppress(OSError):
+                path.unlink()
             continue
         if state.get("status") not in ACTIVE_STATUSES:
+            with suppress(OSError):
+                path.unlink()
             continue
-        if process_alive(state.get("runner_pid")) or process_alive(
-            state.get("agy_pid")
-        ):
-            active.append(state)
+        active.append(state)
     return active
 
 

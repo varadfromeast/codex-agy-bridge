@@ -240,3 +240,21 @@ def test_latest_provider_health_uses_most_recent_known_run(tmp_path):
 
     assert health["status"] == "auth_interaction_required"
     assert health["run_id"] == "newer"
+
+
+def test_active_runs_reserves_queued_run_before_runner_pid_exists(tmp_path):
+    run_id = "queued-run"
+    core.atomic_write_json(
+        core.state_path(run_id, tmp_path),
+        {
+            "run_id": run_id,
+            "status": "queued",
+            "runner_pid": None,
+            "agy_pid": None,
+        },
+    )
+    active_dir = tmp_path / "active"
+    active_dir.mkdir(parents=True)
+    core.atomic_write_json(active_dir / run_id, {"run_id": run_id})
+
+    assert [state["run_id"] for state in core.active_runs(tmp_path)] == [run_id]

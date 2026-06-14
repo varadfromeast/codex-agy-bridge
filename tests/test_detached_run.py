@@ -34,13 +34,24 @@ transcript = (
     / ".system_generated" / "logs" / "transcript.jsonl"
 )
 transcript.parent.mkdir(parents=True, exist_ok=True)
-transcript.write_text(json.dumps({
-    "step_index": 1,
-    "source": "MODEL",
-    "type": "PLANNER_RESPONSE",
-    "status": "DONE",
-    "content": "fake result\\n" + completion_marker,
-}) + "\\n")
+transcript.write_text(
+    json.dumps({
+        "step_index": 0,
+        "source": "USER_EXPLICIT",
+        "type": "USER_INPUT",
+        "status": "DONE",
+        "content": sys.argv[-1],
+    })
+    + "\\n"
+    + json.dumps({
+        "step_index": 1,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": "fake result\\n" + completion_marker,
+    })
+    + "\\n"
+)
 """,
         encoding="utf-8",
     )

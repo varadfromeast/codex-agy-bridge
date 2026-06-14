@@ -28,6 +28,9 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     assert initialized.serverInfo.name == "codex-agy-bridge"
     assert initialized.instructions
     assert "run_id" in initialized.instructions
+    assert "agy_goal_create" in initialized.instructions
+    assert "agy_goal_target_start" in initialized.instructions
+    assert "agy_goal_status" in initialized.instructions
     assert {tool.name for tool in tools.tools} == {
         "agy_start",
         "agy_continue",

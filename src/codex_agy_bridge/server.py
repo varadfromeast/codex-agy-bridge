@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -18,8 +18,11 @@ mcp = FastMCP(
         "Use agy_start for a new Antigravity task and retain its run_id. "
         "Poll agy_status and inspect incremental work with agy_transcript. "
         "Use agy_result only after terminal status. Use agy_continue with the "
-        "exact conversation_id for follow-up work. Goals may contain bounded "
-        "parallel targets. "
+        "exact conversation_id for follow-up work. For bounded parallel work, "
+        "call agy_goal_create once, call agy_goal_target_start once per unique "
+        "named target, then poll agy_goal_status for the aggregate result. "
+        "Use agy_cancel to stop an active run. Visible targets support "
+        "agy_target_open_terminal and agy_target_send_text. "
         "Antigravity is agentic and the workspace is not a security boundary."
     ),
 )
@@ -38,16 +41,19 @@ def create_run(
     visible_terminal: bool = True,
 ) -> dict[str, Any]:
     """Compatibility interface for callers predating the orchestration module."""
-    return orchestration.create_run(
-        prompt=prompt,
-        workspace=workspace,
-        timeout_seconds=timeout_seconds,
-        conversation_id=conversation_id,
-        dangerously_skip_permissions=dangerously_skip_permissions,
-        model=model,
-        goal_id=goal_id,
-        target_name=target_name,
-        visible_terminal=visible_terminal,
+    return cast(
+        dict[str, Any],
+        orchestration.create_run(
+            prompt=prompt,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            model=model,
+            goal_id=goal_id,
+            target_name=target_name,
+            visible_terminal=visible_terminal,
+        ),
     )
 
 
@@ -67,14 +73,17 @@ def agy_start(
     and file edits with the current user's privileges.
     """
     return public_state(
-        orchestration.create_run(
-            prompt=prompt,
-            workspace=workspace,
-            timeout_seconds=timeout_seconds,
-            conversation_id=None,
-            dangerously_skip_permissions=dangerously_skip_permissions,
-            model=model,
-            visible_terminal=visible_terminal,
+        cast(
+            dict[str, Any],
+            orchestration.create_run(
+                prompt=prompt,
+                workspace=workspace,
+                timeout_seconds=timeout_seconds,
+                conversation_id=None,
+                dangerously_skip_permissions=dangerously_skip_permissions,
+                model=model,
+                visible_terminal=visible_terminal,
+            ),
         )
     )
 
@@ -91,14 +100,17 @@ def agy_continue(
 ) -> dict[str, Any]:
     """Continue an exact Antigravity conversation asynchronously."""
     return public_state(
-        orchestration.create_run(
-            prompt=prompt,
-            workspace=workspace,
-            timeout_seconds=timeout_seconds,
-            conversation_id=conversation_id,
-            dangerously_skip_permissions=dangerously_skip_permissions,
-            model=model,
-            visible_terminal=visible_terminal,
+        cast(
+            dict[str, Any],
+            orchestration.create_run(
+                prompt=prompt,
+                workspace=workspace,
+                timeout_seconds=timeout_seconds,
+                conversation_id=conversation_id,
+                dangerously_skip_permissions=dangerously_skip_permissions,
+                model=model,
+                visible_terminal=visible_terminal,
+            ),
         )
     )
 
@@ -147,11 +159,14 @@ def agy_goal_create(
     model: str = DEFAULT_MODEL,
 ) -> dict[str, Any]:
     """Create a lightweight parent goal for bounded parallel targets."""
-    return orchestration.create_goal(
-        objective=objective,
-        workspace=workspace,
-        max_parallel=max_parallel,
-        model=model,
+    return cast(
+        dict[str, Any],
+        orchestration.create_goal(
+            objective=objective,
+            workspace=workspace,
+            max_parallel=max_parallel,
+            model=model,
+        ),
     )
 
 
@@ -166,13 +181,16 @@ def agy_goal_target_start(
 ) -> dict[str, Any]:
     """Start one named goal target, optionally in a persistent visible terminal."""
     return public_state(
-        orchestration.start_goal_target(
-            goal_id=goal_id,
-            target_name=target_name,
-            prompt=prompt,
-            timeout_seconds=timeout_seconds,
-            dangerously_skip_permissions=dangerously_skip_permissions,
-            visible_terminal=visible_terminal,
+        cast(
+            dict[str, Any],
+            orchestration.start_goal_target(
+                goal_id=goal_id,
+                target_name=target_name,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+                dangerously_skip_permissions=dangerously_skip_permissions,
+                visible_terminal=visible_terminal,
+            ),
         )
     )
 

@@ -142,7 +142,7 @@ Useful environment variables:
 | `AGY_CMD` | `agy` on `PATH` | Exact Antigravity executable |
 | `AGY_BRIDGE_STATE_DIR` | `~/.local/state/codex-agy-bridge` | Durable run and goal state |
 | `AGY_BRIDGE_AGY_ROOT` | `~/.gemini/antigravity-cli` | Antigravity conversations and trajectories |
-| `AGY_BRIDGE_MAX_PARALLEL` | `3` | Global concurrent-run limit |
+| `AGY_BRIDGE_MAX_PARALLEL` | `4` | Global concurrent-run limit |
 | `AGY_BRIDGE_COMPLETION_STABILITY_SECONDS` | `150` | Time a final marker must remain stable |
 
 ## MCP Tools
@@ -187,7 +187,7 @@ orchestration.py -- persists state --> core.py / state.py
   |
   | starts detached Python worker
   v
-runner.py -- launches --> agy --print
+runner.py --> supervision.py -- launches --> agy --print
   |                         |
   |                         v
   |                  Antigravity trajectory
@@ -200,10 +200,11 @@ runner.py -- launches --> agy --print
 1. `server.py` exposes stable MCP tools and delegates behavior.
 2. `orchestration.py` validates requests, enforces parallel limits, deduplicates
    active retries, persists initial state, and starts a detached runner.
-3. `runner.py` invokes `agy --print`, discovers the resulting conversation,
+3. `runner.py` provides the detached worker entrypoint and process adapters.
+4. `supervision.py` launches `agy --print`, discovers the resulting conversation,
    streams sanitized progress, observes completion, and records terminal state.
-4. `core.py` atomically persists JSON and reads Antigravity trajectory JSONL.
-5. `terminal.py` owns visible `tmux` execution and Terminal.app interaction.
+5. `core.py` atomically persists JSON and reads Antigravity trajectory JSONL.
+6. `terminal.py` owns visible `tmux` execution and Terminal.app interaction.
 
 Each prompt receives a unique completion marker. A response is considered
 complete only after that marker remains the latest response for a stability
@@ -221,18 +222,21 @@ Read these in this order to understand the product:
    - Owns validation, deduplication, goals, concurrency, cancellation, and
      detached-run startup.
 3. `src/codex_agy_bridge/runner.py`
-   - The execution engine for one run.
-   - Owns the `agy` command, conversation discovery, progress monitoring,
-     completion detection, timeouts, and process shutdown.
-4. `src/codex_agy_bridge/core.py`
+   - The detached-worker entrypoint and process adapter.
+   - Owns command construction, headless/tmux launch, and process shutdown.
+4. `src/codex_agy_bridge/supervision.py`
+   - The lifecycle supervision module for one run.
+   - Owns conversation discovery, progress monitoring, completion detection,
+     timeouts, cancellation, and terminal-state classification.
+5. `src/codex_agy_bridge/core.py`
    - The persistence and Antigravity compatibility layer.
    - Owns state paths, atomic writes, transcript parsing, response extraction,
      and provider-health classification.
-5. `src/codex_agy_bridge/state.py`
+6. `src/codex_agy_bridge/state.py`
    - The persisted data contracts and run-state machine.
-6. `src/codex_agy_bridge/terminal.py`
+7. `src/codex_agy_bridge/terminal.py`
    - The macOS-visible-terminal adapter built on `tmux` and AppleScript.
-7. `src/codex_agy_bridge/lifecycle.py`
+8. `src/codex_agy_bridge/lifecycle.py`
    - Registration and stale cleanup for client-owned MCP server processes.
 
 The most useful tests for learning behavior are:

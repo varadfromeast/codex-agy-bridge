@@ -2,79 +2,120 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import signal
-import subprocess
-import sys
-import uuid
-from contextlib import suppress
+import subprocess as subprocess
 from pathlib import Path
 from typing import Any
 
-from filelock import FileLock
-
-from codex_agy_bridge import terminal
-from codex_agy_bridge.core import (
-    STATE_ROOT,
-    active_runs,
-    atomic_write_json,
-    clean_response,
-    compact_steps,
-    conversation_for_workspace,
-    final_response,
-    goal_path,
-    latest_provider_health,
-    latest_step,
-    load_goal,
-    load_state,
-    process_alive,
-    public_state,
-    run_dir,
-    run_provider_health,
-    state_path,
-    transcript_path,
-    update_goal,
-    update_state,
-    utc_now,
+from codex_agy_bridge import core
+from codex_agy_bridge import terminal as terminal
+from codex_agy_bridge._orchestrator import (
+    DEFAULT_MODEL as DEFAULT_MODEL,
 )
-from codex_agy_bridge.state import ACTIVE_STATUSES, GoalState, RunState
+from codex_agy_bridge._orchestrator import (
+    RunnerOrchestrator,
+)
+from codex_agy_bridge._orchestrator import (
+    _request_key as _request_key,
+)
+from codex_agy_bridge.core import (
+    active_runs as active_runs,
+)
+from codex_agy_bridge.core import (
+    atomic_write_json as atomic_write_json,
+)
+from codex_agy_bridge.core import (
+    clean_response as clean_response,
+)
+from codex_agy_bridge.core import (
+    compact_steps as compact_steps,
+)
+from codex_agy_bridge.core import (
+    conversation_for_workspace as conversation_for_workspace,
+)
+from codex_agy_bridge.core import (
+    final_response as final_response,
+)
+from codex_agy_bridge.core import (
+    goal_dir as goal_dir,
+)
+from codex_agy_bridge.core import (
+    goal_path as goal_path,
+)
+from codex_agy_bridge.core import (
+    latest_provider_health as latest_provider_health,
+)
+from codex_agy_bridge.core import (
+    latest_step as latest_step,
+)
+from codex_agy_bridge.core import (
+    load_goal as load_goal,
+)
+from codex_agy_bridge.core import (
+    load_state as load_state,
+)
+from codex_agy_bridge.core import (
+    public_state as public_state,
+)
+from codex_agy_bridge.core import (
+    run_dir as run_dir,
+)
+from codex_agy_bridge.core import (
+    run_provider_health as run_provider_health,
+)
+from codex_agy_bridge.core import (
+    state_path as state_path,
+)
+from codex_agy_bridge.core import (
+    transcript_path as transcript_path,
+)
+from codex_agy_bridge.core import (
+    update_goal as update_goal,
+)
+from codex_agy_bridge.core import (
+    update_state as update_state,
+)
+from codex_agy_bridge.core import (
+    utc_now as utc_now,
+)
+from codex_agy_bridge.process import ProcessManager as ProcessManager
+from codex_agy_bridge.state import GoalState, RunState
 
-DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
-DEFAULT_MAX_PARALLEL = 3
-AUTH_BLOCKING_STATUSES = {"auth_interaction_required", "auth_unavailable"}
+
+class StateRootProxy:
+    """Proxy object that dynamically delegates to core.STATE_ROOT.
+
+    This ensures that when tests monkeypatch core.STATE_ROOT, any access
+    via orchestration.STATE_ROOT resolves to the correct temporary path.
+    """
+
+    def __str__(self) -> str:
+        return str(core.STATE_ROOT)
+
+    def __truediv__(self, other: str) -> Path:
+        return core.STATE_ROOT / other
+
+    def __rtruediv__(self, other: Any) -> Path:
+        return other / core.STATE_ROOT
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(core.STATE_ROOT, name)
+
+    def __repr__(self) -> str:
+        return repr(core.STATE_ROOT)
+
+    def __fspath__(self) -> str:
+        return os.fspath(core.STATE_ROOT)
 
 
-def _request_key(
-    *,
-    prompt: str,
-    workspace: str,
-    timeout_seconds: int,
-    conversation_id: str | None,
-    dangerously_skip_permissions: bool,
-    model: str,
-    goal_id: str | None,
-    target_name: str | None,
-    visible_terminal: bool,
-) -> str:
-    payload = {
-        "prompt": prompt.rstrip(),
-        "workspace": workspace,
-        "timeout_seconds": timeout_seconds,
-        "conversation_id": conversation_id,
-        "dangerously_skip_permissions": dangerously_skip_permissions,
-        "model": model,
-        "goal_id": goal_id,
-        "target_name": target_name,
-        "visible_terminal": visible_terminal,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+# Public module-level variable for backwards compatibility and tests
+STATE_ROOT = StateRootProxy()
+
+# Global instance for backward compatibility
+_orchestrator = RunnerOrchestrator()
 
 
 def create_run(
-    *,
     prompt: str,
     workspace: str,
     timeout_seconds: int,
@@ -85,156 +126,46 @@ def create_run(
     target_name: str | None = None,
     visible_terminal: bool = True,
 ) -> RunState:
-    if not prompt.strip():
-        raise ValueError("prompt must not be empty")
-    root = Path(workspace).expanduser().resolve()
-    if not root.is_dir():
-        raise ValueError(f"workspace is not a directory: {root}")
-    if timeout_seconds < 10 or timeout_seconds > 86400:
-        raise ValueError("timeout_seconds must be between 10 and 86400")
-    if not visible_terminal:
-        health = latest_provider_health(STATE_ROOT)
-        if health["status"] in AUTH_BLOCKING_STATUSES:
-            action = health.get(
-                "action",
-                "Start with visible_terminal=true and complete Antigravity auth.",
-            )
-            raise ValueError(
-                "Antigravity auth preflight failed for headless run: "
-                f"{health['status']}. {action}"
-            )
-    effective_model = model or DEFAULT_MODEL
-    request_key = _request_key(
+    """Start a new asynchronous Antigravity conversation or reuse duplicate.
+
+    Args:
+        prompt: User instructions for the run.
+        workspace: The directory where the run execution takes place.
+        timeout_seconds: Hard execution limit in seconds.
+        conversation_id: Thread conversation identifier or None.
+        dangerously_skip_permissions: Skip user-interaction prompts.
+        model: Name of the LLM model to request.
+        goal_id: Optional parent goal ID.
+        target_name: Optional target identifier.
+        visible_terminal: True to execute inside visible tmux pane.
+
+    Returns:
+        The created or reused RunState dict.
+    """
+    return _orchestrator.create_run(
         prompt=prompt,
-        workspace=str(root),
+        workspace=workspace,
         timeout_seconds=timeout_seconds,
         conversation_id=conversation_id,
         dangerously_skip_permissions=dangerously_skip_permissions,
-        model=effective_model,
+        model=model,
         goal_id=goal_id,
         target_name=target_name,
         visible_terminal=visible_terminal,
     )
-    STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    with FileLock(str(STATE_ROOT / "start.lock"), timeout=10):
-        running = active_runs()
-        duplicate = next(
-            (state for state in running if state.get("request_key") == request_key),
-            None,
-        )
-        if duplicate is not None:
-            return duplicate
-        max_parallel = int(
-            os.environ.get("AGY_BRIDGE_MAX_PARALLEL", DEFAULT_MAX_PARALLEL)
-        )
-        if goal_id:
-            max_parallel = min(max_parallel, load_goal(goal_id)["max_parallel"])
-        if len(running) >= max_parallel:
-            ids = ", ".join(item["run_id"] for item in running)
-            raise RuntimeError(f"Parallel run limit {max_parallel} reached ({ids}).")
-
-        run_id = (
-            f"{utc_now().replace(':', '').replace('+00:00', 'Z')}-"
-            f"{uuid.uuid4().hex[:8]}"
-        )
-        directory = run_dir(run_id)
-        directory.mkdir(parents=True, exist_ok=False)
-        completion_marker = f"AGY_RUN_COMPLETE_{uuid.uuid4().hex}"
-        effective_prompt = (
-            f"{prompt.rstrip()}\n\n"
-            "When the requested work is fully complete, end your final response "
-            f"with this exact marker on its own line: {completion_marker}"
-        )
-        now = utc_now()
-        state: RunState = {
-            "run_id": run_id,
-            "status": "queued",
-            "created_at": now,
-            "updated_at": now,
-            "workspace": str(root),
-            "prompt": effective_prompt,
-            "prompt_preview": prompt[:240],
-            "completion_marker": completion_marker,
-            "timeout_seconds": timeout_seconds,
-            "requested_conversation_id": conversation_id,
-            "previous_conversation_id": (
-                None if conversation_id else conversation_for_workspace(str(root))
-            ),
-            "conversation_id": conversation_id,
-            "dangerously_skip_permissions": dangerously_skip_permissions,
-            "model": effective_model,
-            "goal_id": goal_id,
-            "target_name": target_name,
-            "visible_terminal": visible_terminal,
-            "request_key": request_key,
-            "tmux_session": terminal.session_name(run_id) if visible_terminal else None,
-            "runner_pid": None,
-            "agy_pid": None,
-            "result": None,
-            "error": None,
-        }
-        atomic_write_json(state_path(run_id), state)
-        try:
-            with (directory / "bridge.log").open("ab") as bridge_log:
-                process = subprocess.Popen(
-                    [sys.executable, "-m", "codex_agy_bridge.runner", run_id],
-                    cwd=str(root),
-                    stdin=subprocess.DEVNULL,
-                    stdout=bridge_log,
-                    stderr=bridge_log,
-                    start_new_session=True,
-                    close_fds=True,
-                )
-        except Exception as error:
-            update_state(
-                run_id,
-                status="failed",
-                error=f"Could not start detached runner: {error}",
-                finished_at=utc_now(),
-            )
-            raise
-        return update_state(run_id, runner_pid=process.pid)
 
 
 def status(run_id: str, *, compact: bool = True) -> dict[str, Any]:
-    state = load_state(run_id)
-    if (
-        state["status"] in ACTIVE_STATUSES
-        and not process_alive(state.get("runner_pid"))
-        and not process_alive(state.get("agy_pid"))
-    ):
-        state = update_state(
-            run_id,
-            status="failed",
-            error="runner exited before recording a terminal status",
-            finished_at=utc_now(),
-        )
-    if compact:
-        conversation_id = state.get("conversation_id")
-        return {
-            "run_id": run_id,
-            "status": state["status"],
-            "conversation_id": conversation_id,
-            "error": state.get("error"),
-            "created_at": state.get("created_at"),
-            "updated_at": state.get("updated_at"),
-            "finished_at": state.get("finished_at"),
-            "latest_step": latest_step(conversation_id) if conversation_id else None,
-            "provider_health": run_provider_health(run_dir(run_id)),
-        }
-    result = dict(state)
-    result["paths"] = {
-        "run_directory": str(run_dir(run_id)),
-        "bridge_log": str(run_dir(run_id) / "bridge.log"),
-        "agy_log": str(run_dir(run_id) / "agy.log"),
-        "stdout": str(run_dir(run_id) / "agy.stdout.log"),
-        "stderr": str(run_dir(run_id) / "agy.stderr.log"),
-        "terminal_progress": str(run_dir(run_id) / "terminal-progress.log"),
-    }
-    conversation_id = state.get("conversation_id")
-    if conversation_id:
-        result["paths"]["transcript"] = str(transcript_path(conversation_id))
-    return public_state(result)
+    """Fetch the current status of a run.
+
+    Args:
+        run_id: The unique run identifier.
+        compact: True to get limited status summary.
+
+    Returns:
+        Dict containing run metadata and state.
+    """
+    return _orchestrator.status(run_id, compact=compact)
 
 
 def transcript(
@@ -245,53 +176,49 @@ def transcript(
     include_content: bool = False,
     max_content_chars: int = 500,
 ) -> dict[str, Any]:
-    conversation_id = load_state(run_id).get("conversation_id")
-    if not conversation_id:
-        return {
-            "run_id": run_id,
-            "conversation_id": None,
-            "steps": [],
-            "message": "Conversation id has not been observed yet.",
-        }
-    return {
-        "run_id": run_id,
-        "conversation_id": conversation_id,
-        "steps": compact_steps(
-            conversation_id,
-            after_step=after_step,
-            limit=limit,
-            include_content=include_content,
-            max_content_chars=max_content_chars,
-        ),
-    }
+    """Fetch step-by-step progress events for the run.
+
+    Args:
+        run_id: The unique run identifier.
+        after_step: Get steps after this index.
+        limit: Max steps to return.
+        include_content: Include message body/thinking.
+        max_content_chars: Length limit for content snippets.
+
+    Returns:
+        Dict containing conversation ID and a list of steps.
+    """
+    return _orchestrator.transcript(
+        run_id,
+        after_step=after_step,
+        limit=limit,
+        include_content=include_content,
+        max_content_chars=max_content_chars,
+    )
 
 
 def result(run_id: str) -> dict[str, Any]:
-    state = load_state(run_id)
-    conversation_id = state.get("conversation_id")
-    response = (
-        final_response(conversation_id) if conversation_id else state.get("result")
-    )
-    return {
-        "run_id": run_id,
-        "status": state["status"],
-        "conversation_id": conversation_id,
-        "result": clean_response(response, state.get("completion_marker")),
-        "error": state.get("error"),
-    }
+    """Fetch final response and completion state.
+
+    Args:
+        run_id: The unique run identifier.
+
+    Returns:
+        Dict containing status, conversation ID, and result/error.
+    """
+    return _orchestrator.result(run_id)
 
 
 def cancel(run_id: str) -> dict[str, Any]:
-    state = load_state(run_id)
-    if state["status"] not in ACTIVE_STATUSES:
-        return public_state(state)
-    (run_dir(run_id) / "cancel").touch()
-    update_state(run_id, status="cancel_requested")
-    agy_pid = state.get("agy_pid")
-    if isinstance(agy_pid, int):
-        with suppress(ProcessLookupError):
-            os.killpg(agy_pid, signal.SIGTERM)
-    return public_state(load_state(run_id))
+    """Request cancel of an active run and kill execution session.
+
+    Args:
+        run_id: The unique run identifier.
+
+    Returns:
+        The updated public RunState dict.
+    """
+    return _orchestrator.cancel(run_id)
 
 
 def create_goal(
@@ -301,25 +228,23 @@ def create_goal(
     max_parallel: int = 2,
     model: str = DEFAULT_MODEL,
 ) -> GoalState:
-    root = Path(workspace).expanduser().resolve()
-    if not objective.strip() or not root.is_dir():
-        raise ValueError("objective and an existing workspace are required")
-    if max_parallel < 1 or max_parallel > DEFAULT_MAX_PARALLEL:
-        raise ValueError(f"max_parallel must be between 1 and {DEFAULT_MAX_PARALLEL}")
-    goal_id = f"goal-{uuid.uuid4().hex[:10]}"
-    now = utc_now()
-    state: GoalState = {
-        "goal_id": goal_id,
-        "objective": objective,
-        "workspace": str(root),
-        "model": model,
-        "max_parallel": max_parallel,
-        "targets": {},
-        "created_at": now,
-        "updated_at": now,
-    }
-    atomic_write_json(goal_path(goal_id), state)
-    return state
+    """Create a new parent goal.
+
+    Args:
+        objective: Description of the goal's overall target.
+        workspace: The directory where execution takes place.
+        max_parallel: Limit on simultaneous runs.
+        model: Target LLM model name.
+
+    Returns:
+        The GoalState dict.
+    """
+    return _orchestrator.create_goal(
+        objective=objective,
+        workspace=workspace,
+        max_parallel=max_parallel,
+        model=model,
+    )
 
 
 def start_goal_target(
@@ -331,58 +256,62 @@ def start_goal_target(
     dangerously_skip_permissions: bool = True,
     visible_terminal: bool = True,
 ) -> RunState:
-    goal = load_goal(goal_id)
-    if not target_name.strip() or target_name in goal["targets"]:
-        raise ValueError("target_name must be non-empty and unique within the goal")
-    state = create_run(
-        prompt=prompt,
-        workspace=goal["workspace"],
-        timeout_seconds=timeout_seconds,
-        conversation_id=None,
-        dangerously_skip_permissions=dangerously_skip_permissions,
-        model=goal["model"],
+    """Create and launch a run linked to a parent goal target.
+
+    Args:
+        goal_id: ID of the parent goal.
+        target_name: Unique target name within the goal.
+        prompt: Run prompt.
+        timeout_seconds: Execution timeout limit.
+        dangerously_skip_permissions: Skip interactive permission prompts.
+        visible_terminal: Run inside visible Tmux window.
+
+    Returns:
+        The launched RunState dict.
+    """
+    return _orchestrator.start_goal_target(
         goal_id=goal_id,
         target_name=target_name,
+        prompt=prompt,
+        timeout_seconds=timeout_seconds,
+        dangerously_skip_permissions=dangerously_skip_permissions,
         visible_terminal=visible_terminal,
     )
-    update_goal(goal_id, targets={**goal["targets"], target_name: state["run_id"]})
-    return state
 
 
 def goal_status(goal_id: str) -> dict[str, Any]:
-    goal = load_goal(goal_id)
-    targets = {}
-    for name, run_id in goal["targets"].items():
-        state = load_state(run_id)
-        targets[name] = {
-            "run_id": run_id,
-            "status": state["status"],
-            "conversation_id": state.get("conversation_id"),
-            "error": state.get("error"),
-        }
-    statuses = {item["status"] for item in targets.values()}
-    if statuses and statuses <= {"completed"}:
-        aggregate = "completed"
-    elif "failed" in statuses:
-        aggregate = "failed"
-    elif statuses & ACTIVE_STATUSES:
-        aggregate = "running"
-    else:
-        aggregate = "pending"
-    return {**goal, "status": aggregate, "targets": targets}
+    """Aggregate statuses of all targets in a goal.
+
+    Args:
+        goal_id: ID of the parent goal.
+
+    Returns:
+        Dict containing goal details, aggregate status, and targets.
+    """
+    return _orchestrator.goal_status(goal_id)
 
 
 def open_terminal(run_id: str) -> dict[str, Any]:
-    session = load_state(run_id).get("tmux_session")
-    if not session:
-        raise ValueError("run was not started with visible_terminal=true")
-    terminal.attach(session, check=True)
-    return {"run_id": run_id, "tmux_session": session, "opened": True}
+    """Open a visible macOS Terminal attached to the run's Tmux session.
+
+    Args:
+        run_id: The unique run identifier.
+
+    Returns:
+        Dict indicating open status.
+    """
+    return _orchestrator.open_terminal(run_id)
 
 
 def send_text(run_id: str, text: str, *, enter: bool = True) -> dict[str, Any]:
-    session = load_state(run_id).get("tmux_session")
-    if not session:
-        raise ValueError("run was not started with visible_terminal=true")
-    terminal.send_text(str(session), text, enter=enter)
-    return {"run_id": run_id, "tmux_session": session, "sent": True, "enter": enter}
+    """Send keystrokes/command to the run's Tmux session.
+
+    Args:
+        run_id: The unique run identifier.
+        text: The text to send.
+        enter: Whether to press Enter after the text.
+
+    Returns:
+        Dict indicating transmission status.
+    """
+    return _orchestrator.send_text(run_id, text, enter=enter)

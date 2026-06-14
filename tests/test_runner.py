@@ -33,7 +33,7 @@ def test_build_command_places_flags_before_print(monkeypatch, tmp_path):
     ]
 
 
-def test_new_run_ignores_existing_workspace_conversation(monkeypatch, tmp_path):
+def test_new_run_ignores_unmatched_workspace_conversation(monkeypatch, tmp_path):
     states = [
         {
             "run_id": "run-1",
@@ -53,7 +53,8 @@ def test_new_run_ignores_existing_workspace_conversation(monkeypatch, tmp_path):
     monkeypatch.setattr(
         runner,
         "conversation_for_workspace",
-        lambda _: "old-conversation",
+        lambda _: "another-parallel-runs-conversation",
+        raising=False,
     )
     updates = []
     monkeypatch.setattr(
@@ -64,7 +65,8 @@ def test_new_run_ignores_existing_workspace_conversation(monkeypatch, tmp_path):
 
     assert runner.run("run-1") == 1
     assert not any(
-        update.get("conversation_id") == "old-conversation" for update in updates
+        update.get("conversation_id") == "another-parallel-runs-conversation"
+        for update in updates
     )
 
 
