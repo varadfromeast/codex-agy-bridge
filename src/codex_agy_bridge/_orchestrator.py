@@ -17,6 +17,7 @@ from codex_agy_bridge import core, terminal
 from codex_agy_bridge.exceptions import (
     AntigravityAuthRequired,
     ConcurrencyLimitExceeded,
+    RunNotFoundError,
     WorkspaceAccessError,
 )
 from codex_agy_bridge.execution import ExecutionSession, HeadlessSession, TmuxSession
@@ -25,13 +26,33 @@ from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
     GoalState,
     RunState,
-    validate_run_state,
 )
 from codex_agy_bridge.store import DiskRunStore, RunStore
 
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 4
 AUTH_BLOCKING_STATUSES = {"auth_interaction_required", "auth_unavailable"}
+
+
+def _global_max_parallel() -> int:
+    """Return validated global parallelism capped at the product limit."""
+    configured = os.environ.get(
+        "AGY_BRIDGE_MAX_PARALLEL",
+        str(DEFAULT_MAX_PARALLEL),
+    )
+    try:
+        value = int(configured)
+    except ValueError as error:
+        raise ValueError(
+            "AGY_BRIDGE_MAX_PARALLEL must be an integer between "
+            f"1 and {DEFAULT_MAX_PARALLEL}"
+        ) from error
+    if value < 1:
+        raise ValueError(
+            "AGY_BRIDGE_MAX_PARALLEL must be an integer between "
+            f"1 and {DEFAULT_MAX_PARALLEL}"
+        )
+    return min(value, DEFAULT_MAX_PARALLEL)
 
 
 def _request_key(
@@ -214,7 +235,13 @@ class RunnerOrchestrator:
         """
         return self.store.get_run(run_id)
 
-    def update_state(self, run_id: str, **changes: Any) -> RunState:
+    def update_state(
+        self,
+        run_id: str,
+        *,
+        only_if_active: bool = False,
+        **changes: Any,
+    ) -> RunState:
         """Update fields in a run's state.
 
         Args:
@@ -224,13 +251,11 @@ class RunnerOrchestrator:
         Returns:
             The updated, validated RunState dict.
         """
-        with self.store.lock_run(run_id):
-            state = self.store.get_run(run_id)
-            cast(dict[str, Any], state).update(changes)
-            state["updated_at"] = core.utc_now()
-            validated = validate_run_state(state)
-            self.store.save_run(run_id, validated)
-            return validated
+        return self.store.update_run(
+            run_id,
+            changes,
+            require_active=only_if_active,
+        )
 
     def load_goal(self, goal_id: str) -> GoalState:
         """Load the goal state dict for the given goal_id.
@@ -360,18 +385,22 @@ class RunnerOrchestrator:
             )
             if duplicate is not None:
                 return duplicate
-            max_parallel = int(
-                os.environ.get("AGY_BRIDGE_MAX_PARALLEL", DEFAULT_MAX_PARALLEL)
-            )
-            if goal_id:
-                max_parallel = min(
-                    max_parallel, self.load_goal(goal_id)["max_parallel"]
-                )
-            if len(running) >= max_parallel:
+            global_max_parallel = _global_max_parallel()
+            if len(running) >= global_max_parallel:
                 ids = ", ".join(item["run_id"] for item in running)
                 raise ConcurrencyLimitExceeded(
-                    f"Parallel run limit {max_parallel} reached ({ids})."
+                    f"Global parallel run limit {global_max_parallel} reached ({ids})."
                 )
+            if goal_id:
+                goal_max_parallel = self.load_goal(goal_id)["max_parallel"]
+                goal_running = [
+                    state for state in running if state.get("goal_id") == goal_id
+                ]
+                if len(goal_running) >= goal_max_parallel:
+                    ids = ", ".join(item["run_id"] for item in goal_running)
+                    raise ConcurrencyLimitExceeded(
+                        f"Goal parallel run limit {goal_max_parallel} reached ({ids})."
+                    )
 
             run_id = (
                 f"{core.utc_now().replace(':', '').replace('+00:00', 'Z')}-"
@@ -465,6 +494,7 @@ class RunnerOrchestrator:
                 status="failed",
                 error="runner exited before recording a terminal status",
                 finished_at=core.utc_now(),
+                only_if_active=True,
             )
         if compact:
             conversation_id = state.get("conversation_id")
@@ -583,7 +613,13 @@ class RunnerOrchestrator:
         cancel_file = self.run_dir(run_id) / "cancel"
         cancel_file.parent.mkdir(parents=True, exist_ok=True)
         cancel_file.touch()
-        self.update_state(run_id, status="cancel_requested")
+        state = self.update_state(
+            run_id,
+            status="cancel_requested",
+            only_if_active=True,
+        )
+        if state["status"] not in ACTIVE_STATUSES:
+            return core.public_state(cast(dict[str, Any], state))
         session = self.get_session(state)
         session.kill()
         # Fix audit #1: if runner is already dead, finalize immediately
@@ -598,6 +634,7 @@ class RunnerOrchestrator:
                 run_id,
                 status="canceled",
                 finished_at=core.utc_now(),
+                only_if_active=True,
             )
         return core.public_state(cast(dict[str, Any], self.load_state(run_id)))
 
@@ -643,7 +680,7 @@ class RunnerOrchestrator:
             "updated_at": now,
         }
         self.state_root.mkdir(parents=True, exist_ok=True)
-        core.atomic_write_json(self.goal_path(goal_id), state)
+        self.store.save_goal(goal_id, state)
         return state
 
     def start_goal_target(
@@ -706,7 +743,16 @@ class RunnerOrchestrator:
         goal = self.load_goal(goal_id)
         targets = {}
         for name, run_id in goal["targets"].items():
-            state = self.load_state(run_id)
+            try:
+                state = self.load_state(run_id)
+            except (RunNotFoundError, OSError, ValueError) as error:
+                targets[name] = {
+                    "run_id": run_id,
+                    "status": "failed",
+                    "conversation_id": None,
+                    "error": f"Target state unavailable: {error}",
+                }
+                continue
             targets[name] = {
                 "run_id": run_id,
                 "status": state["status"],

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, Protocol
+from threading import Lock, RLock
+from typing import Any, Protocol, cast
 
 from filelock import FileLock
 
@@ -43,6 +44,16 @@ class RunStore(Protocol):
             run_id: Unique run identifier
             state: The RunState dict to save
         """
+        ...
+
+    def update_run(
+        self,
+        run_id: str,
+        changes: dict[str, Any],
+        *,
+        require_active: bool = False,
+    ) -> RunState:
+        """Atomically update a run, optionally only while it remains active."""
         ...
 
     def get_goal(self, goal_id: str) -> GoalState:
@@ -141,6 +152,24 @@ class DiskRunStore:
             with suppress(OSError):
                 active_file.unlink()
 
+    def update_run(
+        self,
+        run_id: str,
+        changes: dict[str, Any],
+        *,
+        require_active: bool = False,
+    ) -> RunState:
+        """Atomically apply changes without overwriting a terminal transition."""
+        with self.lock_run(run_id):
+            state = self.get_run(run_id)
+            if require_active and state.get("status") not in ACTIVE_STATUSES:
+                return state
+            cast(dict[str, Any], state).update(changes)
+            state["updated_at"] = core.utc_now()
+            validated = validate_run_state(state)
+            self.save_run(run_id, validated)
+            return validated
+
     def get_goal(self, goal_id: str) -> GoalState:
         """Fetch a goal state from state_root."""
         return core.load_goal(goal_id, state_root=self.state_root)
@@ -174,6 +203,9 @@ class MemoryRunStore:
         """Initialize MemoryRunStore."""
         self.runs: dict[str, RunState] = {}
         self.goals: dict[str, GoalState] = {}
+        self._lock_guard = Lock()
+        self._run_locks: dict[str, RLock] = {}
+        self._goal_locks: dict[str, RLock] = {}
 
     def get_run(self, run_id: str) -> RunState:
         """Retrieve run state from memory."""
@@ -184,6 +216,24 @@ class MemoryRunStore:
     def save_run(self, run_id: str, state: RunState) -> None:
         """Save run state in memory."""
         self.runs[run_id] = validate_run_state(dict(state))
+
+    def update_run(
+        self,
+        run_id: str,
+        changes: dict[str, Any],
+        *,
+        require_active: bool = False,
+    ) -> RunState:
+        """Atomically apply changes using the same semantics as disk storage."""
+        with self.lock_run(run_id):
+            state = self.get_run(run_id)
+            if require_active and state.get("status") not in ACTIVE_STATUSES:
+                return state
+            cast(dict[str, Any], state).update(changes)
+            state["updated_at"] = core.utc_now()
+            validated = validate_run_state(state)
+            self.save_run(run_id, validated)
+            return validated
 
     def get_goal(self, goal_id: str) -> GoalState:
         """Retrieve goal state from memory."""
@@ -196,12 +246,14 @@ class MemoryRunStore:
         self.goals[goal_id] = validate_goal_state(dict(state))
 
     def lock_run(self, run_id: str) -> AbstractContextManager[Any]:
-        """No-op nullcontext transaction lock."""
-        return nullcontext()
+        """Acquire an in-process reentrant lock for a run transaction."""
+        with self._lock_guard:
+            return self._run_locks.setdefault(run_id, RLock())
 
     def lock_goal(self, goal_id: str) -> AbstractContextManager[Any]:
-        """No-op nullcontext transaction lock."""
-        return nullcontext()
+        """Acquire an in-process reentrant lock for a goal transaction."""
+        with self._lock_guard:
+            return self._goal_locks.setdefault(goal_id, RLock())
 
     def list_active_runs(self) -> list[RunState]:
         """Filter memory runs by active status."""

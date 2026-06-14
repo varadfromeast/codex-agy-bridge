@@ -7,14 +7,13 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from codex_agy_bridge.process import ProcessManager
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     RunState,
-    validate_run_state,
 )
 from codex_agy_bridge.store import RunStore
 
@@ -49,13 +48,7 @@ class RunJanitor:
         Returns:
             The updated, validated RunState dict
         """
-        with self.store.lock_run(run_id):
-            state = self.store.get_run(run_id)
-            cast(dict[str, Any], state).update(changes)
-            state["updated_at"] = datetime.now(UTC).isoformat()
-            validated = validate_run_state(state)
-            self.store.save_run(run_id, validated)
-            return validated
+        return self.store.update_run(run_id, changes, require_active=True)
 
     def clean(self, max_log_age_days: int = 7) -> None:
         """Reclaim dead runs and delete terminal log folders older than X days.
@@ -143,7 +136,9 @@ class RunJanitor:
                                         else:
                                             child.unlink()
                             except Exception:
-                                shutil.rmtree(run_path)
+                                # Durable state is evidence. Preserve the entire
+                                # run directory when state cannot be classified.
+                                continue
                         else:
                             shutil.rmtree(run_path)
                 except Exception:
