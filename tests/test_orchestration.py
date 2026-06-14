@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from codex_agy_bridge import orchestration
+from codex_agy_bridge import core, orchestration
+
+
+def isolate_state_root(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setattr(core, "STATE_ROOT", state_root)
+    monkeypatch.setattr(orchestration, "STATE_ROOT", state_root)
+    return state_root
 
 
 def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
@@ -33,7 +40,7 @@ def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
     }
     spawned = []
 
-    monkeypatch.setattr(orchestration, "STATE_ROOT", tmp_path / "state")
+    isolate_state_root(monkeypatch, tmp_path)
     monkeypatch.setattr(orchestration, "active_runs", lambda: [existing])
     monkeypatch.setattr(
         orchestration.subprocess,
@@ -76,7 +83,7 @@ def test_headless_start_fails_fast_when_auth_needs_interaction(monkeypatch, tmp_
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     spawned = []
-    monkeypatch.setattr(orchestration, "STATE_ROOT", tmp_path / "state")
+    isolate_state_root(monkeypatch, tmp_path)
     monkeypatch.setattr(
         orchestration,
         "latest_provider_health",
@@ -111,7 +118,7 @@ def test_visible_start_allows_auth_interaction_recovery(monkeypatch, tmp_path):
     class FakeProcess:
         pid = 4321
 
-    monkeypatch.setattr(orchestration, "STATE_ROOT", tmp_path / "state")
+    isolate_state_root(monkeypatch, tmp_path)
     monkeypatch.setattr(orchestration, "active_runs", lambda: [])
     monkeypatch.setattr(
         orchestration,
