@@ -218,10 +218,10 @@ def status(run_id: str, *, compact: bool = True) -> dict[str, Any]:
             "error": state.get("error"),
             "created_at": state.get("created_at"),
             "updated_at": state.get("updated_at"),
-        "finished_at": state.get("finished_at"),
-        "latest_step": latest_step(conversation_id) if conversation_id else None,
-        "provider_health": run_provider_health(run_dir(run_id)),
-    }
+            "finished_at": state.get("finished_at"),
+            "latest_step": latest_step(conversation_id) if conversation_id else None,
+            "provider_health": run_provider_health(run_dir(run_id)),
+        }
     result = dict(state)
     result["paths"] = {
         "run_directory": str(run_dir(run_id)),

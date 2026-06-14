@@ -10,10 +10,25 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Varad" }]
+keywords = ["mcp", "codex", "antigravity", "agents", "ai"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "filelock>=3.18,<4",
   "mcp>=1.27,<2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/varadfromeast/codex-agy-bridge"
+Repository = "https://github.com/varadfromeast/codex-agy-bridge"
+Issues = "https://github.com/varadfromeast/codex-agy-bridge/issues"
 
 [project.optional-dependencies]
 dev = [

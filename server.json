@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.varadfromeast/codex-agy-bridge",
+  "title": "Codex Antigravity Bridge",
+  "description": "Observable, resumable MCP bridge from Codex to the Antigravity CLI",
+  "repository": {
+    "url": "https://github.com/varadfromeast/codex-agy-bridge",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "codex-agy-bridge",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AGY_CMD",
+          "description": "Absolute path to the authenticated Antigravity CLI executable",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
