@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from codex_agy_bridge import orchestration
 from codex_agy_bridge.core import STATE_ROOT, public_state
+from codex_agy_bridge.lifecycle import register_server_instance
 
 DEFAULT_MODEL = orchestration.DEFAULT_MODEL
 
@@ -190,6 +191,7 @@ def agy_target_open_terminal(run_id: str) -> dict[str, Any]:
 
 def main() -> None:
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    register_server_instance(STATE_ROOT)
     mcp.run(transport="stdio")
 
 
