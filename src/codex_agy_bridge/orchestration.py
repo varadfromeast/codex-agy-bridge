@@ -25,6 +25,7 @@ from codex_agy_bridge.core import (
     conversation_for_workspace,
     final_response,
     goal_path,
+    latest_provider_health,
     latest_step,
     load_goal,
     load_state,
@@ -42,6 +43,7 @@ from codex_agy_bridge.state import ACTIVE_STATUSES, GoalState, RunState
 
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 3
+AUTH_BLOCKING_STATUSES = {"auth_interaction_required", "auth_unavailable"}
 
 
 def _request_key(
@@ -90,6 +92,17 @@ def create_run(
         raise ValueError(f"workspace is not a directory: {root}")
     if timeout_seconds < 10 or timeout_seconds > 86400:
         raise ValueError("timeout_seconds must be between 10 and 86400")
+    if not visible_terminal:
+        health = latest_provider_health(STATE_ROOT)
+        if health["status"] in AUTH_BLOCKING_STATUSES:
+            action = health.get(
+                "action",
+                "Start with visible_terminal=true and complete Antigravity auth.",
+            )
+            raise ValueError(
+                "Antigravity auth preflight failed for headless run: "
+                f"{health['status']}. {action}"
+            )
     effective_model = model or DEFAULT_MODEL
     request_key = _request_key(
         prompt=prompt,

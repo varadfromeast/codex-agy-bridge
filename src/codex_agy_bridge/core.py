@@ -192,6 +192,32 @@ def run_provider_health(directory: Path) -> dict[str, Any]:
     return health
 
 
+def latest_provider_health(state_root: Path) -> dict[str, Any]:
+    """Return the most recent known provider health from persisted run logs."""
+    runs_root = state_root / "runs"
+    if not runs_root.exists():
+        return {"status": "unknown"}
+
+    candidates: list[tuple[float, Path]] = []
+    for directory in runs_root.iterdir():
+        if not directory.is_dir():
+            continue
+        try:
+            modified_at = max(
+                (path.stat().st_mtime for path in directory.glob("agy*.log")),
+                default=directory.stat().st_mtime,
+            )
+        except OSError:
+            continue
+        candidates.append((modified_at, directory))
+
+    for _modified_at, directory in sorted(candidates, reverse=True):
+        health = run_provider_health(directory)
+        if health["status"] != "unknown":
+            return {**health, "run_id": directory.name}
+    return {"status": "unknown"}
+
+
 def conversation_for_workspace(workspace: str) -> str | None:
     if not LAST_CONVERSATIONS.exists():
         return None

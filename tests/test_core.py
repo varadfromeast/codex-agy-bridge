@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from codex_agy_bridge import core
 
@@ -219,3 +220,23 @@ def test_run_provider_health_reports_response_timeout_action(tmp_path):
 
     assert health["status"] == "response_timeout"
     assert "agy_target_send_text" in health["action"]
+
+
+def test_latest_provider_health_uses_most_recent_known_run(tmp_path):
+    state_root = tmp_path / "state"
+    older = state_root / "runs" / "older"
+    newer = state_root / "runs" / "newer"
+    older.mkdir(parents=True)
+    newer.mkdir(parents=True)
+    (older / "agy.log").write_text("applyAuthResult: consumer\n", encoding="utf-8")
+    (newer / "agy.log").write_text(
+        "failed to get OAuth token\n",
+        encoding="utf-8",
+    )
+    newer_time = older.stat().st_mtime + 10
+    os.utime(newer / "agy.log", (newer_time, newer_time))
+
+    health = core.latest_provider_health(state_root)
+
+    assert health["status"] == "auth_interaction_required"
+    assert health["run_id"] == "newer"
