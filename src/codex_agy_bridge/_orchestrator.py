@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -14,14 +13,18 @@ from typing import Any, cast
 
 from filelock import FileLock
 
-from codex_agy_bridge import core, terminal
-from codex_agy_bridge.exceptions import (
-    ConcurrencyLimitExceeded,
-    RunNotFoundError,
-    WorkspaceAccessError,
-)
+from codex_agy_bridge import core, interactive_input, terminal
+from codex_agy_bridge.cli import AntigravityCli
+from codex_agy_bridge.exceptions import ConcurrencyLimitExceeded, RunNotFoundError
 from codex_agy_bridge.execution import ExecutionSession, TmuxSession
 from codex_agy_bridge.process import LocalProcessManager, ProcessManager
+from codex_agy_bridge.run_request import (
+    RunRequest,
+    normalize_additional_directories,
+)
+from codex_agy_bridge.run_request import (
+    _request_key as _request_key,
+)
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
     GoalState,
@@ -55,45 +58,6 @@ def _global_max_parallel() -> int:
     return min(value, DEFAULT_MAX_PARALLEL)
 
 
-def _request_key(
-    *,
-    prompt: str,
-    workspace: str,
-    timeout_seconds: int,
-    conversation_id: str | None,
-    dangerously_skip_permissions: bool,
-    model: str,
-    goal_id: str | None,
-    target_name: str | None,
-) -> str:
-    """Generate a unique request key for checking duplicates.
-
-    Args:
-        prompt: The task prompt.
-        workspace: Path to the workspace directory.
-        timeout_seconds: Timeout limit in seconds.
-        conversation_id: Unique conversation ID or None.
-        dangerously_skip_permissions: True if skipping permissions.
-        model: Target LLM model name.
-        goal_id: Optional parent goal ID.
-        target_name: Optional target name within a goal.
-    Returns:
-        Hex digest string representing the request options.
-    """
-    payload = {
-        "prompt": prompt.rstrip(),
-        "workspace": workspace,
-        "timeout_seconds": timeout_seconds,
-        "conversation_id": conversation_id,
-        "dangerously_skip_permissions": dangerously_skip_permissions,
-        "model": model,
-        "goal_id": goal_id,
-        "target_name": target_name,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
 # _call_with_optional_state_root removed (audit #3).
 # All call sites now use direct core.* calls with explicit state_root.
 
@@ -124,6 +88,7 @@ class RunnerOrchestrator:
         process_manager: ProcessManager | None = None,
         store: RunStore | None = None,
         session_factory: Callable[[RunState, Path], ExecutionSession] | None = None,
+        cli: AntigravityCli | None = None,
     ):
         """Initialize the orchestrator.
 
@@ -137,6 +102,7 @@ class RunnerOrchestrator:
         self.process_manager = process_manager or LocalProcessManager()
         self._store = store
         self.session_factory = session_factory or default_session_factory
+        self.cli = cli or AntigravityCli()
 
     @property
     def state_root(self) -> Path:
@@ -324,6 +290,9 @@ class RunnerOrchestrator:
         conversation_id: str | None,
         dangerously_skip_permissions: bool = True,
         model: str | None = DEFAULT_MODEL,
+        sandbox: bool = False,
+        additional_directories: list[str] | None = None,
+        execution_mode: str = "print",
         goal_id: str | None = None,
         target_name: str | None = None,
     ) -> RunState:
@@ -346,28 +315,22 @@ class RunnerOrchestrator:
             ValueError: For invalid parameter values.
             ConcurrencyLimitExceeded: If parallel run limits are breached.
         """
-        if not prompt.strip():
-            raise ValueError("prompt must not be empty")
-        if conversation_id is not None and not conversation_id.strip():
-            raise ValueError("conversation_id must not be empty")
-        root = Path(workspace).expanduser().resolve()
-        if not root.is_dir():
-            raise WorkspaceAccessError(f"workspace is not a directory: {root}")
-        if timeout_seconds < 10 or timeout_seconds > 86400:
-            raise ValueError("timeout_seconds must be between 10 and 86400")
-        self.maybe_run_janitor()
-
-        effective_model = model or DEFAULT_MODEL
-        request_key = _request_key(
+        request = RunRequest.prepare(
             prompt=prompt,
-            workspace=str(root),
+            workspace=workspace,
             timeout_seconds=timeout_seconds,
             conversation_id=conversation_id,
             dangerously_skip_permissions=dangerously_skip_permissions,
-            model=effective_model,
+            model=model,
+            default_model=DEFAULT_MODEL,
+            sandbox=sandbox,
+            additional_directories=additional_directories or [],
+            execution_mode=execution_mode,
             goal_id=goal_id,
             target_name=target_name,
+            cli=self.cli,
         )
+        self.maybe_run_janitor()
         from codex_agy_bridge import orchestration
 
         self.state_root.mkdir(parents=True, exist_ok=True)
@@ -375,7 +338,11 @@ class RunnerOrchestrator:
         with FileLock(str(self.state_root / "start.lock"), timeout=10):
             running = self.active_runs()
             duplicate = next(
-                (state for state in running if state.get("request_key") == request_key),
+                (
+                    state
+                    for state in running
+                    if state.get("request_key") == request.request_key
+                ),
                 None,
             )
             if duplicate is not None:
@@ -403,48 +370,27 @@ class RunnerOrchestrator:
             )
             directory = self.run_dir(run_id)
             directory.mkdir(parents=True, exist_ok=False)
-            completion_marker = f"AGY_RUN_COMPLETE_{uuid.uuid4().hex}"
-            effective_prompt = (
-                f"{prompt.rstrip()}\n\n"
-                "When the requested work is fully complete, end your final response "
-                f"with this exact marker on its own line: {completion_marker}"
-            )
             now = core.utc_now()
-            state: RunState = {
-                "run_id": run_id,
-                "status": "queued",
-                "created_at": now,
-                "updated_at": now,
-                "workspace": str(root),
-                "prompt": effective_prompt,
-                "prompt_preview": prompt[:240],
-                "completion_marker": completion_marker,
-                "timeout_seconds": timeout_seconds,
-                "requested_conversation_id": conversation_id,
-                "previous_conversation_id": (
+            state = request.initial_state(
+                run_id=run_id,
+                now=now,
+                previous_conversation_id=(
                     None
-                    if conversation_id
-                    else orchestration.conversation_for_workspace(str(root))
+                    if request.conversation_id
+                    else orchestration.conversation_for_workspace(
+                        str(request.workspace)
+                    )
                 ),
-                "conversation_id": conversation_id,
-                "dangerously_skip_permissions": dangerously_skip_permissions,
-                "model": effective_model,
-                "goal_id": goal_id,
-                "target_name": target_name,
-                "request_key": request_key,
-                "tmux_session": terminal.session_name(run_id),
-                "runner_pid": None,
-                "agy_pid": None,
-                "result": None,
-                "error": None,
-            }
+                tmux_session=terminal.session_name(run_id),
+                completion_marker=f"AGY_RUN_COMPLETE_{uuid.uuid4().hex}",
+            )
             self.store.save_run(run_id, state)
         # Lock released — spawn subprocess without blocking other create_run callers.
         try:
             with (directory / "bridge.log").open("ab") as bridge_log:
                 process = self.process_manager.spawn(
                     [sys.executable, "-m", "codex_agy_bridge.runner", run_id],
-                    cwd=str(root),
+                    cwd=str(request.workspace),
                     stdout=bridge_log,
                     stderr=bridge_log,
                 )
@@ -490,19 +436,32 @@ class RunnerOrchestrator:
             )
         if compact:
             conversation_id = state.get("conversation_id")
+            latest = (
+                core.latest_step(conversation_id)
+                if conversation_id
+                else None
+            )
+            execution_mode = state.get("execution_mode", "print")
+            session_state = None
+            if execution_mode == "interactive" and state["status"] in ACTIVE_STATUSES:
+                session_state = (
+                    "awaiting_input"
+                    if latest
+                    and latest.get("type") == "PLANNER_RESPONSE"
+                    and latest.get("status") == "DONE"
+                    else "working"
+                )
             return {
                 "run_id": run_id,
                 "status": state["status"],
+                "execution_mode": execution_mode,
+                "session_state": session_state,
                 "conversation_id": conversation_id,
                 "error": state.get("error"),
                 "created_at": state.get("created_at"),
                 "updated_at": state.get("updated_at"),
                 "finished_at": state.get("finished_at"),
-                "latest_step": (
-                    core.latest_step(conversation_id)
-                    if conversation_id
-                    else None
-                ),
+                "latest_step": latest,
                 "provider_health": core.run_provider_health(
                     self.run_dir(run_id)
                 ),
@@ -637,6 +596,9 @@ class RunnerOrchestrator:
         workspace: str,
         max_parallel: int = 2,
         model: str = DEFAULT_MODEL,
+        sandbox: bool = False,
+        additional_directories: list[str] | None = None,
+        dangerously_skip_permissions: bool = True,
     ) -> GoalState:
         """Create a new parent goal.
 
@@ -667,6 +629,12 @@ class RunnerOrchestrator:
             )
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must not be empty")
+        if model != DEFAULT_MODEL:
+            self.cli.validate_model(model)
+        normalized_directories = normalize_additional_directories(
+            additional_directories or [],
+            workspace=root,
+        )
         goal_id = f"goal-{uuid.uuid4().hex[:10]}"
         now = core.utc_now()
         state: GoalState = {
@@ -675,6 +643,9 @@ class RunnerOrchestrator:
             "workspace": str(root),
             "model": model,
             "max_parallel": max_parallel,
+            "sandbox": sandbox,
+            "additional_directories": list(normalized_directories),
+            "dangerously_skip_permissions": dangerously_skip_permissions,
             "targets": {},
             "created_at": now,
             "updated_at": now,
@@ -690,7 +661,9 @@ class RunnerOrchestrator:
         target_name: str,
         prompt: str,
         timeout_seconds: int = 900,
-        dangerously_skip_permissions: bool = True,
+        dangerously_skip_permissions: bool | None = None,
+        sandbox: bool | None = None,
+        additional_directories: list[str] | None = None,
     ) -> RunState:
         """Create and launch a run linked to a parent goal target.
 
@@ -717,8 +690,18 @@ class RunnerOrchestrator:
                 workspace=goal["workspace"],
                 timeout_seconds=timeout_seconds,
                 conversation_id=None,
-                dangerously_skip_permissions=dangerously_skip_permissions,
+                dangerously_skip_permissions=(
+                    goal.get("dangerously_skip_permissions", True)
+                    if dangerously_skip_permissions is None
+                    else dangerously_skip_permissions
+                ),
                 model=goal["model"],
+                sandbox=goal.get("sandbox", False) if sandbox is None else sandbox,
+                additional_directories=(
+                    goal.get("additional_directories", [])
+                    if additional_directories is None
+                    else additional_directories
+                ),
                 goal_id=goal_id,
                 target_name=target_name,
             )
@@ -808,10 +791,30 @@ class RunnerOrchestrator:
         if not state.get("tmux_session"):
             raise ValueError("run does not have a tmux session")
         session = self.get_session(state)
-        session.send_input(text, enter=enter)
+        if not session.is_alive():
+            raise ValueError(
+                f"tmux session is not running: {state.get('tmux_session')}"
+            )
+        queued = (
+            state.get("execution_mode") == "interactive"
+            and enter
+            and bool(text)
+        )
+        if queued:
+            interactive_input.enqueue(self.run_dir(run_id), text)
+        else:
+            session.send_input(text, enter=enter)
         return {
             "run_id": run_id,
             "tmux_session": state.get("tmux_session"),
             "sent": True,
             "enter": enter,
+            "execution_mode": state.get("execution_mode", "print"),
+            "delivery": (
+                "queued_interactive_prompt"
+                if queued
+                else "interactive_keystrokes"
+                if state.get("execution_mode") == "interactive"
+                else "terminal_keystrokes"
+            ),
         }

@@ -33,7 +33,7 @@ def test_tmux_session_lifecycle(tmp_path: Path):
         # Test send_input
         session.send_input("yes", enter=True)
         mock_run.assert_any_call(
-            ["tmux", "send-keys", "-t", "agy-run-3", "--", "yes"],
+            ["tmux", "send-keys", "-t", "agy-run-3", "-l", "--", "yes"],
             check=True,
         )
         mock_run.assert_any_call(

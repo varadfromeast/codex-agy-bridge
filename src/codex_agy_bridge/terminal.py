@@ -22,6 +22,8 @@ def launch(
     stdout_log: Path,
     stderr_log: Path,
 ) -> None:
+    exit_code = terminal_log.parent / "agy.exit-code"
+    exit_code_tmp = terminal_log.parent / "agy.exit-code.tmp"
     session_environment: list[str] = []
     for name in ("AGY_CMD", "AGY_BRIDGE_STATE_DIR", "AGY_BRIDGE_AGY_ROOT"):
         value = os.environ.get(name)
@@ -41,6 +43,8 @@ def launch(
             "trap cleanup HUP INT TERM",
             'wait "$agy_pid"',
             "status=$?",
+            f"printf '%s\\n' \"$status\" > {shlex.quote(str(exit_code_tmp))}",
+            f"mv {shlex.quote(str(exit_code_tmp))} {shlex.quote(str(exit_code))}",
             "sleep 1",
             'kill "$tail_pid" 2>/dev/null || true',
             'wait "$tail_pid" 2>/dev/null || true',
@@ -111,6 +115,16 @@ def send_text(session: str, text: str, *, enter: bool = True) -> None:
         raise ValueError(f"tmux session is not running: {session}")
     if "\x00" in text:
         raise ValueError("text must not contain NUL bytes")
-    subprocess.run(["tmux", "send-keys", "-t", session, "--", text], check=True)
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session, "-l", "--", line],
+            check=True,
+        )
+        if index < len(lines) - 1:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", session, "M-Enter"],
+                check=True,
+            )
     if enter:
         subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True)

@@ -6,7 +6,9 @@ import os
 import time
 from datetime import UTC, datetime
 
+from codex_agy_bridge import interactive_input
 from codex_agy_bridge import runner as runtime
+from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.state import RunState
 from codex_agy_bridge.transcript import TranscriptHarvester
 
@@ -33,9 +35,10 @@ class RunSupervisor:
         )
         self.marker_response: str | None = None
         self.marker_seen_at: float | None = None
-        self.last_terminal_step = -1
         self.next_conversation_probe_at = 0.0
         self.conversation_probe_delay = 1.0
+        self.latest_response_step_index = -1
+        self.interactive_waiting_after_step: int | None = None
 
     def execute(self) -> int:
         """Run the complete lifecycle behind one small interface."""
@@ -84,6 +87,7 @@ class RunSupervisor:
                 self._finish(status="canceled")
                 return 0
             self._observe_conversation()
+            self._deliver_interactive_input()
             response = self._response()
             if self._completion_is_stable(response):
                 self._finish(
@@ -94,7 +98,10 @@ class RunSupervisor:
                 )
                 self._stop()
                 return 0
-            if time.monotonic() >= deadline:
+            if (
+                self.state.get("execution_mode") != "interactive"
+                and time.monotonic() >= deadline
+            ):
                 self._stop()
                 self._finish(status="failed", error="hard timeout exceeded")
                 return 1
@@ -128,16 +135,43 @@ class RunSupervisor:
                 )
         if self.harvester:
             records = self.harvester.poll()
+            for record in records:
+                if (
+                    record.get("type") == "PLANNER_RESPONSE"
+                    and record.get("status") == "DONE"
+                    and isinstance(record.get("step_index"), int)
+                ):
+                    self.latest_response_step_index = record["step_index"]
             if records and self.session:
-                self.last_terminal_step = runtime.append_terminal_progress(
+                runtime.append_terminal_progress(
                     records,
                     progress_log=self.progress_path,
                 )
+
+    def _deliver_interactive_input(self) -> None:
+        if (
+            self.state.get("execution_mode") != "interactive"
+            or not self.session
+            or self.latest_response_step_index < 0
+        ):
+            return
+        if self.interactive_waiting_after_step is not None:
+            if self.latest_response_step_index <= self.interactive_waiting_after_step:
+                return
+            self.interactive_waiting_after_step = None
+        text = interactive_input.peek(self.directory)
+        if text is None:
+            return
+        TmuxSession(self.directory, session_name=self.session).send_input(text)
+        interactive_input.pop(self.directory)
+        self.interactive_waiting_after_step = self.latest_response_step_index
 
     def _response(self) -> str | None:
         return self.harvester.latest_response if self.harvester else None
 
     def _completion_is_stable(self, response: str | None) -> bool:
+        if self.state.get("execution_mode") == "interactive":
+            return False
         marker = str(self.state["completion_marker"])
         if not response or marker not in response:
             self.marker_response = None
@@ -164,11 +198,21 @@ class RunSupervisor:
         elif response:
             status, error = "completed", None
         else:
-            status, error = self._classify_empty_response()
-        self._finish(status=status, result=response, error=error)
+            status, error = self._classify_empty_response(self._return_code())
+        self._finish(
+            status=status,
+            result=response,
+            error=error,
+            return_code=self._return_code(),
+        )
         return 0 if status == "completed" else 1
 
-    def _classify_empty_response(self) -> tuple[str, str]:
+    def _classify_empty_response(
+        self,
+        return_code: int | None,
+    ) -> tuple[str, str]:
+        if return_code not in {None, 0}:
+            return "failed", f"agy exited with code {return_code} without a response"
         health = runtime.run_provider_health(self.directory)
         if health["status"] in {
             "auth_interaction_required",
@@ -191,13 +235,20 @@ class RunSupervisor:
         status: str,
         result: str | None = None,
         error: str | None = None,
+        return_code: int | None = None,
     ) -> None:
         runtime.update_state(
             self.run_id,
             status=status,
             conversation_id=self.conversation_id,
-            return_code=0,
+            return_code=return_code,
             result=result,
             error=error,
             finished_at=datetime.now(UTC).isoformat(),
         )
+
+    def _return_code(self) -> int | None:
+        return TmuxSession(
+            self.directory,
+            session_name=self.session,
+        ).returncode

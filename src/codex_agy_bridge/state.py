@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 RunStatus = Literal[
     "queued",
@@ -12,6 +12,7 @@ RunStatus = Literal[
     "failed",
     "canceled",
 ]
+ExecutionMode = Literal["print", "interactive"]
 
 ACTIVE_STATUSES: set[RunStatus] = {"queued", "running", "cancel_requested"}
 TERMINAL_STATUSES: set[RunStatus] = {"completed", "failed", "canceled"}
@@ -31,6 +32,9 @@ class RunState(TypedDict, total=False):
     previous_conversation_id: str | None
     conversation_id: str | None
     dangerously_skip_permissions: bool
+    sandbox: bool
+    additional_directories: list[str]
+    execution_mode: ExecutionMode
     model: str
     goal_id: str | None
     target_name: str | None
@@ -56,6 +60,9 @@ class GoalState(TypedDict):
     targets: dict[str, str]
     created_at: str
     updated_at: str
+    sandbox: NotRequired[bool]
+    additional_directories: NotRequired[list[str]]
+    dangerously_skip_permissions: NotRequired[bool]
 
 
 def validate_run_state(value: object) -> RunState:
