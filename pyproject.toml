@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codex-agy-bridge"
-version = "0.1.0"
+version = "0.1.1"
 description = "Observable, resumable MCP bridge from Codex to Antigravity CLI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +42,9 @@ codex-agy-bridge = "codex_agy_bridge.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/codex_agy_bridge"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src/codex_agy_bridge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
