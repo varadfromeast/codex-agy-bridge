@@ -1,0 +1,112 @@
+name: Publish Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install tmux
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+      - run: uv run pytest
+      - name: Verify release versions
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          import tomllib
+          from pathlib import Path
+
+          tag_version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          project = tomllib.loads(Path("pyproject.toml").read_text())
+          server = json.loads(Path("server.json").read_text())
+          project_version = project["project"]["version"]
+          server_version = server["version"]
+          package_version = server["packages"][0]["version"]
+          versions = {tag_version, project_version, server_version, package_version}
+          if len(versions) != 1:
+              raise SystemExit(
+                  "release versions differ: "
+                  f"tag={tag_version}, project={project_version}, "
+                  f"server={server_version}, package={package_version}"
+              )
+          PY
+      - run: uv build
+      - run: uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag
+
+  publish-mcp:
+    needs: [publish-pypi, github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Wait for the PyPI release
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in {1..30}; do
+            if curl --fail --silent \
+              "https://pypi.org/pypi/codex-agy-bridge/${version}/json" \
+              >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "PyPI release did not become visible within five minutes" >&2
+          exit 1
+      - name: Install mcp-publisher
+        run: |
+          curl -L \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+            | tar xz mcp-publisher
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish server metadata
+        run: ./mcp-publisher publish

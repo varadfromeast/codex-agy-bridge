@@ -70,7 +70,55 @@ uv --version
 tmux -V
 ```
 
-### One-command Codex installation from GitHub
+### Install in Codex from PyPI
+
+After the first PyPI release, install the bridge without cloning this
+repository:
+
+```bash
+codex mcp add codex-agy-bridge \
+  --env AGY_CMD="$(command -v agy)" \
+  -- "$(command -v uvx)" codex-agy-bridge@latest
+```
+
+Restart Codex, then verify:
+
+```bash
+codex mcp get codex-agy-bridge
+codex mcp list
+```
+
+`codex mcp add` stores an stdio MCP server definition. When Codex starts the
+server, it launches the absolute `uvx` executable recorded by the command.
+`uvx` resolves `codex-agy-bridge@latest` from PyPI, creates an isolated cached
+environment, installs the package and its dependencies, then runs the
+`codex-agy-bridge` console script. `AGY_CMD` pins the bridge to the user's
+already-installed and authenticated `agy` executable.
+
+### Ask a Codex agent to install it
+
+Paste this prompt into Codex:
+
+```text
+Install codex-agy-bridge as a user-level stdio MCP server on this Mac.
+First verify that codex, agy, uvx, and tmux are installed, and that agy is
+authenticated. Do not install missing prerequisites without asking me.
+Then run:
+
+codex mcp add codex-agy-bridge \
+  --env AGY_CMD="$(command -v agy)" \
+  -- "$(command -v uvx)" codex-agy-bridge@latest
+
+Verify the saved configuration with `codex mcp get codex-agy-bridge` and
+`codex mcp list`. Tell me to restart Codex so the new MCP tools are loaded.
+```
+
+The README is the best place for this prompt because it is visible before the
+repository is cloned. `AGENTS.md` is intended for contributors working inside
+the checkout and should not cause an agent to modify a user's machine merely
+because it read the repository instructions.
+
+### Install from GitHub before a PyPI release
 
 This works before a PyPI release:
 
@@ -108,22 +156,9 @@ codex mcp add codex-agy-bridge \
   -- uv --directory "$PWD" run codex-agy-bridge
 ```
 
-### Install from PyPI
-
-After the first PyPI release:
-
-```bash
-codex mcp add codex-agy-bridge \
-  --env AGY_CMD="$(command -v agy)" \
-  -- uvx codex-agy-bridge
-```
-
-The MCP Registry metadata in `server.json` also depends on that public PyPI
-package.
-
 ## Configuration
 
-The `codex mcp add` command writes the equivalent of:
+The local-clone `codex mcp add` command writes the equivalent of:
 
 ```toml
 [mcp_servers.codex-agy-bridge]
@@ -352,15 +387,23 @@ would corrupt MCP framing.
 
 ## Publishing
 
-The official MCP Registry stores metadata, not package artifacts. Publishing
-there therefore requires:
+The official MCP Registry stores metadata, not package artifacts. A pushed
+version tag runs `.github/workflows/publish.yml`, which:
 
-1. Build and publish `codex-agy-bridge` to PyPI.
-2. Confirm the README contains the matching `mcp-name` verification comment.
-3. Update matching versions in `pyproject.toml` and `server.json`.
-4. Install the official `mcp-publisher`.
-5. Run `mcp-publisher login github`.
-6. Run `mcp-publisher publish`.
+1. Verifies that the tag, Python package, and Registry metadata versions match.
+2. Runs lint, tests, build, and distribution checks.
+3. Publishes the wheel and source distribution to PyPI through GitHub OIDC.
+4. Creates a GitHub release containing both distributions.
+5. Waits for the package to become visible on PyPI.
+6. Publishes `server.json` to the MCP Registry through GitHub OIDC.
+
+Before pushing the first tag, create a pending PyPI Trusted Publisher for:
+
+- Repository: `varadfromeast/codex-agy-bridge`
+- Workflow: `publish.yml`
+- Environment: `pypi`
+
+No long-lived PyPI or MCP Registry publishing token is required.
 
 The registry is currently in preview. See:
 
