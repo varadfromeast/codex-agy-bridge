@@ -348,6 +348,16 @@ def test_active_runs_reserves_queued_run_before_runner_pid_exists(tmp_path):
     assert [state["run_id"] for state in core.active_runs(tmp_path)] == [run_id]
 
 
+def test_active_runs_ignores_atomic_write_temporary_files(tmp_path):
+    active_dir = tmp_path / "active"
+    active_dir.mkdir()
+    temporary = active_dir / ".run-id.temporary"
+    temporary.write_text('{"run_id": "run-id"}\n', encoding="utf-8")
+
+    assert core.active_runs(tmp_path) == []
+    assert temporary.exists()
+
+
 @pytest.mark.parametrize(
     "identifier",
     [

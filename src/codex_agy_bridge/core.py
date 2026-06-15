@@ -168,7 +168,7 @@ def active_runs(state_root: Path | None = None) -> list[RunState]:
         return []
     active: list[RunState] = []
     for path in active_dir.iterdir():
-        if not path.is_file():
+        if path.name.startswith(".") or not path.is_file():
             continue
         run_id = path.name
         try:
