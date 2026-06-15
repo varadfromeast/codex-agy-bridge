@@ -305,6 +305,10 @@ class RunnerOrchestrator:
             conversation_id: Thread conversation identifier or None.
             dangerously_skip_permissions: Skip user-interaction prompts.
             model: Name of the LLM model to request.
+            sandbox: Forward the Antigravity CLI sandbox policy hint; not
+                filesystem containment.
+            additional_directories: Forward validated CLI directory hints; not
+                filesystem boundaries.
             goal_id: Optional parent goal ID.
             target_name: Optional target identifier.
         Returns:
@@ -417,6 +421,14 @@ class RunnerOrchestrator:
         state = self.load_state(run_id)
         runner_pid = state.get("runner_pid")
         agy_pid = state.get("agy_pid")
+        runner_exited = (
+            runner_pid is not None
+            and not self.process_manager.is_alive(runner_pid)
+        )
+        no_recorded_process_is_alive = (
+            runner_pid is None
+            and (agy_pid is None or not self.process_manager.is_alive(agy_pid))
+        )
         if (
             state["status"] in ACTIVE_STATUSES
             and not (
@@ -424,8 +436,7 @@ class RunnerOrchestrator:
                 and state.get("runner_pid") is None
                 and state.get("agy_pid") is None
             )
-            and (runner_pid is None or not self.process_manager.is_alive(runner_pid))
-            and (agy_pid is None or not self.process_manager.is_alive(agy_pid))
+            and (runner_exited or no_recorded_process_is_alive)
         ):
             state = self.update_state(
                 run_id,
@@ -434,6 +445,8 @@ class RunnerOrchestrator:
                 finished_at=core.utc_now(),
                 only_if_active=True,
             )
+            if state["status"] == "failed":
+                self.get_session(state).kill()
         if compact:
             conversation_id = state.get("conversation_id")
             latest = (
@@ -443,6 +456,7 @@ class RunnerOrchestrator:
             )
             execution_mode = state.get("execution_mode", "print")
             session_state = None
+            interactive_queue = None
             if execution_mode == "interactive" and state["status"] in ACTIVE_STATUSES:
                 session_state = (
                     "awaiting_input"
@@ -451,6 +465,18 @@ class RunnerOrchestrator:
                     and latest.get("status") == "DONE"
                     else "working"
                 )
+                queued_prompts = interactive_input.count(self.run_dir(run_id))
+                interactive_queue = {
+                    "experimental": True,
+                    "queued_prompts": queued_prompts,
+                    "delivery_state": (
+                        "waiting_for_response"
+                        if state.get("interactive_prompt_in_flight")
+                        else "queued"
+                        if queued_prompts
+                        else "idle"
+                    ),
+                }
             return {
                 "run_id": run_id,
                 "status": state["status"],
@@ -465,6 +491,7 @@ class RunnerOrchestrator:
                 "provider_health": core.run_provider_health(
                     self.run_dir(run_id)
                 ),
+                "interactive_queue": interactive_queue,
             }
         result: dict[str, Any] = dict(state)
         result["paths"] = {
@@ -600,13 +627,15 @@ class RunnerOrchestrator:
         additional_directories: list[str] | None = None,
         dangerously_skip_permissions: bool = True,
     ) -> GoalState:
-        """Create a new parent goal.
+        """Create a bridge-owned MCP scheduler container.
 
         Args:
             objective: Description of the goal's overall target.
             workspace: The directory where execution takes place.
             max_parallel: Limit on simultaneous runs.
             model: Target LLM model name.
+            sandbox: CLI policy hint inherited by targets; not containment.
+            additional_directories: CLI directory hints inherited by targets.
 
         Returns:
             The GoalState dict.
@@ -665,7 +694,7 @@ class RunnerOrchestrator:
         sandbox: bool | None = None,
         additional_directories: list[str] | None = None,
     ) -> RunState:
-        """Create and launch a run linked to a parent goal target.
+        """Create an independent Run linked to an MCP scheduler target.
 
         Args:
             goal_id: ID of the parent goal.
@@ -673,6 +702,8 @@ class RunnerOrchestrator:
             prompt: Run prompt.
             timeout_seconds: Execution timeout limit.
             dangerously_skip_permissions: Skip interactive permission prompts.
+            sandbox: CLI policy hint for this target; not containment.
+            additional_directories: CLI directory hints for this target.
         Returns:
             The launched RunState dict.
 
@@ -785,9 +816,11 @@ class RunnerOrchestrator:
             Dict indicating transmission status.
 
         Raises:
-            ValueError: If the tmux session is unavailable.
+            ValueError: If the Run is not interactive or tmux is unavailable.
         """
         state = self.load_state(run_id)
+        if state.get("execution_mode") != "interactive":
+            raise ValueError("text input is only supported for interactive Runs")
         if not state.get("tmux_session"):
             raise ValueError("run does not have a tmux session")
         session = self.get_session(state)
@@ -795,11 +828,7 @@ class RunnerOrchestrator:
             raise ValueError(
                 f"tmux session is not running: {state.get('tmux_session')}"
             )
-        queued = (
-            state.get("execution_mode") == "interactive"
-            and enter
-            and bool(text)
-        )
+        queued = enter and bool(text)
         if queued:
             interactive_input.enqueue(self.run_dir(run_id), text)
         else:
@@ -814,7 +843,5 @@ class RunnerOrchestrator:
                 "queued_interactive_prompt"
                 if queued
                 else "interactive_keystrokes"
-                if state.get("execution_mode") == "interactive"
-                else "terminal_keystrokes"
             ),
         }

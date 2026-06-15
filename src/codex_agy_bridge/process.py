@@ -75,10 +75,27 @@ class LocalProcessManager(ProcessManager):
         if not pid:
             return False
         try:
+            reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            if reaped_pid == pid:
+                return False
+        try:
             os.kill(pid, 0)
         except (OSError, TypeError, ValueError):
             return False
-        return True
+        try:
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            ).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        return not state.startswith("Z")
 
     def killpg(self, gpid: int, sig: int) -> None:
         """Send signal to a local process group, ignoring lookup errors."""

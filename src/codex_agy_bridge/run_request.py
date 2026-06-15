@@ -163,6 +163,7 @@ class RunRequest:
             "agy_pid": None,
             "result": None,
             "error": None,
+            "interactive_prompt_in_flight": False,
         }
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from codex_agy_bridge import interactive_input, runner
 from codex_agy_bridge.supervision import RunSupervisor
 
@@ -134,6 +136,44 @@ def test_supervisor_returns_failure_for_hard_timeout(monkeypatch, tmp_path):
     assert result == 1
     assert updates[-1]["status"] == "failed"
     assert updates[-1]["error"] == "hard timeout exceeded"
+
+
+def test_supervisor_stops_session_after_unexpected_monitor_failure(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    updates = []
+    stopped = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "build_command", lambda _state: ["/bin/true"])
+    monkeypatch.setattr(runner, "launch_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+    monkeypatch.setattr(runner, "stop_run", lambda session: stopped.append(session))
+    supervisor = RunSupervisor("run-1")
+    monkeypatch.setattr(
+        supervisor,
+        "_monitor_until_exit",
+        lambda: (_ for _ in ()).throw(RuntimeError("monitor failed")),
+    )
+
+    result = supervisor.execute()
+
+    assert result == 1
+    assert stopped == ["agy-run-1"]
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["error"] == "RuntimeError: monitor failed"
 
 
 def test_interactive_supervisor_ignores_hard_timeout_while_session_is_alive(
@@ -284,8 +324,14 @@ def test_interactive_supervisor_delivers_one_queued_prompt_per_response(
         "execution_mode": "interactive",
     }
     sent = []
+    updates = []
     monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
     monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
     monkeypatch.setattr(
         runner,
         "transcript_path",
@@ -307,3 +353,47 @@ def test_interactive_supervisor_delivers_one_queued_prompt_per_response(
     supervisor._deliver_interactive_input()
 
     assert sent == [("first", True), ("second", True)]
+    assert updates == [
+        {"interactive_prompt_in_flight": True},
+        {"interactive_prompt_in_flight": False},
+        {"interactive_prompt_in_flight": True},
+    ]
+
+
+def test_interactive_queue_preserves_prompt_when_in_flight_state_write_fails(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "requested_conversation_id": "conversation-1",
+        "completion_marker": "",
+        "prompt": "do work",
+        "execution_mode": "interactive",
+    }
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "transcript_path",
+        lambda _conversation_id: tmp_path / "transcript.jsonl",
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.TmuxSession.send_input",
+        lambda _self, _text, enter=True: None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **_changes: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    interactive_input.enqueue(tmp_path, "preserve me")
+    supervisor = RunSupervisor("run-1")
+    supervisor.session = "agy-run-1"
+    supervisor.latest_response_step_index = 2
+
+    with pytest.raises(OSError, match="disk full"):
+        supervisor._deliver_interactive_input()
+
+    assert interactive_input.peek(tmp_path) == "preserve me"

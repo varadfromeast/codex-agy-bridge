@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from codex_agy_bridge import interactive_input
@@ -49,6 +50,8 @@ class RunSupervisor:
                 return monitor_result
             return self._finish_after_exit()
         except Exception as error:
+            with suppress(Exception):
+                self._stop()
             self._finish(
                 status="failed",
                 error=f"{type(error).__name__}: {error}",
@@ -159,10 +162,18 @@ class RunSupervisor:
             if self.latest_response_step_index <= self.interactive_waiting_after_step:
                 return
             self.interactive_waiting_after_step = None
+            runtime.update_state(
+                self.run_id,
+                interactive_prompt_in_flight=False,
+            )
         text = interactive_input.peek(self.directory)
         if text is None:
             return
         TmuxSession(self.directory, session_name=self.session).send_input(text)
+        runtime.update_state(
+            self.run_id,
+            interactive_prompt_in_flight=True,
+        )
         interactive_input.pop(self.directory)
         self.interactive_waiting_after_step = self.latest_response_step_index
 

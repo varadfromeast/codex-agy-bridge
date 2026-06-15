@@ -49,6 +49,7 @@ class RunState(TypedDict, total=False):
     started_at: str
     finished_at: str
     return_code: int | None
+    interactive_prompt_in_flight: bool
 
 
 class GoalState(TypedDict):

@@ -24,8 +24,9 @@ high-value execution controls exposed by the CLI:
 It also does not expose read-only CLI discovery such as `agy models`, version,
 changelog, or imported-plugin listing.
 
-The recommended next release should add sandboxing, additional workspace
-directories, dynamic model discovery, and a consolidated diagnostics tool.
+The implemented release forwards sandbox and additional-directory CLI policy
+hints, adds dynamic model discovery, and provides consolidated diagnostics.
+Live testing proved these CLI flags are not filesystem containment.
 Interactive mode should be treated as a separate product capability rather
 than mixed into the existing print-mode lifecycle.
 
@@ -47,9 +48,9 @@ agy 1.0.8
 | `--model <name>` | Yes | Accepted without preflight validation |
 | `--log-file <path>` | Yes | Used for bounded post-run diagnostics |
 | `--dangerously-skip-permissions` | Yes | Powerful and currently enabled by default |
-| `--sandbox` | No | High-value safety improvement |
-| `--add-dir <path>` | No | High-value multi-repository capability |
-| `--prompt-interactive` | No | Requires a different lifecycle contract |
+| `--sandbox` | Yes | CLI policy hint; not filesystem containment |
+| `--add-dir <path>` | Yes | CLI context/write hint; not a boundary |
+| `--prompt-interactive` | Yes, experimental | Transcript-gated queue may stall |
 | `--continue` | No | Intentionally inferior to exact conversation IDs |
 
 ### Subcommands
@@ -79,7 +80,7 @@ GPT-OSS 120B (Medium)
 
 ## Recommended Extensions
 
-### 1. Sandboxed Runs
+### 1. CLI Sandbox Policy Hint
 
 Add `sandbox: bool` to:
 
@@ -95,18 +96,18 @@ Recommended policy:
 
 ```text
 sandbox=true, dangerously_skip_permissions=false
-    safest interactive-approval posture
+    CLI sandbox hint with permission prompts retained
 
 sandbox=true, dangerously_skip_permissions=true
-    unattended execution constrained by CLI sandbox
+    unattended execution with the CLI sandbox hint
 
 sandbox=false, dangerously_skip_permissions=true
     current unrestricted autonomous behavior
 ```
 
-The bridge should document that sandboxing and permission auto-approval are
-independent controls. Sandbox mode limits terminal capabilities; it does not
-make arbitrary prompts trustworthy.
+The bridge documents that sandbox and permission auto-approval are independent
+CLI controls. Neither sandbox, workspace, nor additional directories are
+filesystem containment.
 
 Required tests:
 
@@ -419,16 +420,8 @@ Recommended fix:
 
 ### Defect 4: Public Contract Compatibility
 
-The former `visible_terminal` argument was removed because every run now uses
-tmux and opens Terminal.app. Existing clients that still send the argument may
-receive schema rejection.
-
-Options:
-
-1. Reintroduce it as a deprecated ignored field for one compatibility window.
-2. Keep the breaking change and publish a major schema/version transition.
-
-The first option is lower risk while the project is still stabilizing.
+The ignored `visible_terminal` argument is removed from the MCP schema. Clients
+that still send it receive strict schema rejection.
 
 ### Defect 5: `send_text` Semantics Are Overstated
 
@@ -580,15 +573,15 @@ expanded into persisted explicit fields.
 1. Make runner and terminal tests environment-independent.
 2. Persist real tmux child exit codes.
 3. Remove dead `last_terminal_step` state.
-4. Clarify `send_text` print-mode semantics.
-5. Decide `visible_terminal` compatibility policy.
+4. Restrict `send_text` to interactive Runs.
+5. Remove ignored `visible_terminal` fields.
 
 ### Phase 1: Safe Execution Expansion
 
-1. Add `sandbox`.
-2. Add validated `additional_directories`.
+1. Add the `sandbox` CLI policy hint.
+2. Add validated `additional_directories` CLI hints.
 3. Include both in state, request keys, status, and tests.
-4. Run live sandbox containment and multi-repository tests.
+4. Record live CLI behavior without treating it as containment.
 
 ### Phase 2: Discovery and Diagnostics
 
@@ -628,7 +621,7 @@ expanded into persisted explicit fields.
 | Interactive | Send two prompts through one persistent session |
 | Context | Verify native isolation and explicit artifact handoff |
 | Capacity | Mix sandboxed, unrestricted, and interactive runs at global limit |
-| Compatibility | Start with and without deprecated `visible_terminal` |
+| Compatibility | Reject removed `visible_terminal` arguments |
 
 ## Priority Recommendation
 

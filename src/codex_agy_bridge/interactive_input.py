@@ -38,6 +38,12 @@ def pop(directory: Path) -> str | None:
         return text
 
 
+def count(directory: Path) -> int:
+    """Return the number of prompts waiting for delivery."""
+    with FileLock(str(directory / "interactive-input.lock"), timeout=10):
+        return len(_load(directory))
+
+
 def _load(directory: Path) -> list[str]:
     try:
         value = json.loads((directory / "interactive-input.json").read_text())
