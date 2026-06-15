@@ -7,7 +7,6 @@ import time
 from datetime import UTC, datetime
 
 from codex_agy_bridge import runner as runtime
-from codex_agy_bridge import terminal
 from codex_agy_bridge.state import RunState
 from codex_agy_bridge.transcript import TranscriptHarvester
 
@@ -68,8 +67,6 @@ class RunSupervisor:
         self.session = (
             str(self.state["tmux_session"]) if self.state.get("tmux_session") else None
         )
-        if self.session:
-            terminal.attach(self.session)
         runtime.update_state(
             self.run_id,
             status="running",

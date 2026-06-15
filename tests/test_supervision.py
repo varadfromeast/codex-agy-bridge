@@ -92,6 +92,31 @@ def test_supervisor_returns_failure_for_hard_timeout(monkeypatch, tmp_path):
     assert updates[-1]["error"] == "hard timeout exceeded"
 
 
+def test_supervisor_launch_does_not_open_terminal(monkeypatch, tmp_path):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    attached = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "build_command", lambda _state: ["/bin/true"])
+    monkeypatch.setattr(runner, "launch_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "update_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "codex_agy_bridge.terminal.attach",
+        lambda session: attached.append(session),
+    )
+
+    RunSupervisor("run-1")._launch()
+
+    assert attached == []
+
+
 def test_supervisor_backs_off_conversation_discovery(monkeypatch, tmp_path):
     state = {
         "run_id": "run-1",
