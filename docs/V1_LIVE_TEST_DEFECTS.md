@@ -37,3 +37,37 @@ containment boundary.
 These cases remain executable as expected failures so a future CLI release can
 prove stronger behavior. They must not be V1 bridge release gates while the
 README states that the bridge and workspace are not security boundaries.
+
+## V1-DEFECT-002 - Cancellation Leaves Tool Subprocesses Running
+
+- Live test: `V1-19`
+- Observed: June 15, 2026
+- Runs:
+  - `2026-06-15T140953.654938+0000-64f63474`
+  - `2026-06-15T140953.664264+0000-2ccec774`
+  - `2026-06-15T140953.684328+0000-0f2580a9`
+- Result: `FAIL`
+
+After the 20-minute mixed-capacity soak canceled all four Runs, the bridge
+reported zero active Runs and removed every test-owned tmux session. However,
+three terminal-tool commands remained alive as PID-1 children:
+
+```text
+python3 -c import time; time.sleep(1500)
+```
+
+The tmux pane cleanup terminates the Antigravity process, but a terminal-tool
+command may create its own process group. Such descendants are not terminated
+by `tmux kill-session` and can continue executing after the Run is reported
+`canceled`.
+
+Expected behavior: cancellation snapshots the tmux pane's descendant process
+tree, terminates those descendants, kills the tmux session, and escalates any
+survivors before recording cleanup as complete.
+
+Resolution: fixed with a public `TmuxSession` regression test that launches a
+child in an independent process group. `terminal.stop()` now snapshots the
+pane's descendant tree, sends `SIGTERM` to descendant process groups, destroys
+the tmux session, waits briefly, and sends `SIGKILL` to surviving snapshot
+members. A 60-second live mixed-capacity reproduction started three uniquely
+marked hold commands and confirmed zero marked processes after cancellation.

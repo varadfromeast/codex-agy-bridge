@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
+import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -40,6 +46,51 @@ def test_tmux_session_lifecycle(tmp_path: Path):
             ["tmux", "send-keys", "-t", "agy-run-3", "Enter"],
             check=True,
         )
+
+
+def test_tmux_session_kill_terminates_new_session_descendant(tmp_path: Path):
+    session = TmuxSession(run_dir=tmp_path)
+    child_pid_path = tmp_path / "child.pid"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import pathlib, subprocess, sys, time; "
+            "child = subprocess.Popen("
+            "[sys.executable, '-c', 'import time; time.sleep(60)'], "
+            "start_new_session=True); "
+            f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+            "time.sleep(60)"
+        ),
+    ]
+    child_pid = 0
+
+    try:
+        session.start("escaped-child", command, tmp_path)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not child_pid_path.exists():
+            time.sleep(0.05)
+        assert child_pid_path.exists()
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+        session.kill()
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if subprocess.run(
+                ["ps", "-p", str(child_pid)],
+                capture_output=True,
+                check=False,
+            ).returncode != 0:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(f"escaped child process still alive: {child_pid}")
+    finally:
+        session.kill()
+        if child_pid:
+            with suppress(ProcessLookupError):
+                os.kill(child_pid, signal.SIGKILL)
 
 
 # Need to import subprocess in the test to reference subprocess.DEVNULL

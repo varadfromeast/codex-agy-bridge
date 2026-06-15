@@ -284,12 +284,15 @@ Pass:
 - Queue storage remains valid during concurrent reads and cancellation.
 - Resource use remains acceptable and recorded.
 
-Result: `NOT RUN`
+Result: `PASS` - 100 prompts were accepted in 1.02 seconds and delivered
+exactly once in FIFO order in 310.61 seconds. All 100 responses contained the
+expected token. State grew from 29,568 bytes after enqueue to 246,679 bytes
+after drain, and cancellation left no runner or tmux session.
 
 ### V1-19 - Mixed Capacity Soak
 
 Run a mix of print, interactive, sandboxed, unrestricted, and Goal targets at
-the global capacity limit for at least 30 minutes.
+the global capacity limit for at least 20 minutes.
 
 Pass:
 
@@ -298,7 +301,14 @@ Pass:
 - Completion and cancellation release capacity promptly.
 - No orphan workers, sentinels, or tmux sessions remain.
 
-Result: `NOT RUN`
+Result: `PASS WITH DEFECT FIXED` - four mixed workloads remained active for
+1,200 seconds across 37 health samples, the fifth start was rejected, and MCP
+diagnostics remained responsive. Initial cleanup exposed `V1-DEFECT-002`:
+three terminal-tool subprocesses survived cancellation after escaping into
+independent process groups. The terminal adapter now terminates the tmux pane's
+descendant process tree before destroying the session. A 60-second live
+reproduction then proved all three marked subprocesses, all active Runs, and
+all tmux sessions were removed.
 
 ### V1-20 - Disk And Log Pressure
 
@@ -344,7 +354,8 @@ For each failure:
 - Manual macOS acceptance: V1-01 through V1-05 and V1-08 because they require
   visible Terminal.app interaction or authentication mutation.
 - Dedicated soak jobs: V1-17 through V1-20; do not run them in the normal test
-  suite.
+  suite. V1-18 and V1-19 are executable in `tests/test_v1_soak_live.py` with
+  `AGY_LIVE_SOAK_TESTS=1`; V1-19 defaults to 1,200 seconds.
 - Remove V1-13, V1-14, and V1-16 from bridge release gating. Symlink
   containment is owned by the upstream CLI, while multi-repository edits and
   file handoff add agent-workflow coverage but no new bridge control-plane

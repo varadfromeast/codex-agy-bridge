@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -111,7 +113,92 @@ def alive(session: str) -> bool:
 
 
 def stop(session: str) -> None:
+    pane_pid = _pane_pid(session)
+    descendants = _descendant_pids(pane_pid) if pane_pid is not None else []
+    _signal_processes(descendants, signal.SIGTERM)
     subprocess.run(["tmux", "kill-session", "-t", session], check=False)
+    deadline = time.monotonic() + 2
+    survivors = descendants
+    while survivors and time.monotonic() < deadline:
+        survivors = [pid for pid in survivors if _process_alive(pid)]
+        if survivors:
+            time.sleep(0.05)
+    _signal_processes(survivors, signal.SIGKILL)
+
+
+def _pane_pid(session: str) -> int | None:
+    completed = subprocess.run(
+        ["tmux", "list-panes", "-t", session, "-F", "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if (
+        completed is None
+        or completed.returncode != 0
+        or not isinstance(completed.stdout, str)
+    ):
+        return None
+    try:
+        return int(completed.stdout.splitlines()[0].strip())
+    except (IndexError, ValueError):
+        return None
+
+
+def _descendant_pids(root_pid: int) -> list[int]:
+    completed = subprocess.run(
+        ["ps", "-axo", "pid=,ppid="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in completed.stdout.splitlines():
+        try:
+            pid_text, parent_text = line.split()
+            pid, parent = int(pid_text), int(parent_text)
+        except ValueError:
+            continue
+        children.setdefault(parent, []).append(pid)
+
+    descendants: list[int] = []
+    pending = list(children.get(root_pid, []))
+    while pending:
+        pid = pending.pop()
+        descendants.append(pid)
+        pending.extend(children.get(pid, []))
+    return descendants
+
+
+def _signal_processes(pids: list[int], sig: signal.Signals) -> None:
+    process_groups: set[int] = set()
+    for pid in pids:
+        try:
+            process_groups.add(os.getpgid(pid))
+        except ProcessLookupError:
+            continue
+    for process_group in process_groups:
+        try:
+            os.killpg(process_group, sig)
+        except (ProcessLookupError, PermissionError):
+            continue
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            continue
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def send_text(session: str, text: str, *, enter: bool = True) -> None:
