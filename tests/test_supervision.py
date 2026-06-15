@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codex_agy_bridge import runner
+from codex_agy_bridge import interactive_input, runner
 from codex_agy_bridge.supervision import RunSupervisor
 
 
@@ -42,6 +42,32 @@ def test_supervisor_classifies_successful_exit(monkeypatch, tmp_path):
     assert result == 0
     assert updates[-1]["status"] == "completed"
     assert updates[-1]["result"] == "result"
+    assert updates[-1]["return_code"] is None
+
+
+def test_supervisor_classifies_nonzero_cli_exit(monkeypatch, tmp_path):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+    }
+    updates = []
+    (tmp_path / "agy.exit-code").write_text("17\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+
+    result = RunSupervisor("run-1")._finish_after_exit()
+
+    assert result == 1
+    assert updates[-1]["return_code"] == 17
+    assert updates[-1]["error"] == "agy exited with code 17 without a response"
 
 
 def test_supervisor_resets_completion_stability_for_changed_response(
@@ -62,6 +88,24 @@ def test_supervisor_resets_completion_stability_for_changed_response(
     first_seen_at = supervisor.marker_seen_at
     assert not supervisor._completion_is_stable("changed DONE_MARKER")
     assert supervisor.marker_seen_at != first_seen_at
+
+
+def test_interactive_supervisor_does_not_finish_on_completion_marker(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "",
+        "prompt": "do work",
+        "execution_mode": "interactive",
+    }
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert not supervisor._completion_is_stable("initial response")
 
 
 def test_supervisor_returns_failure_for_hard_timeout(monkeypatch, tmp_path):
@@ -90,6 +134,35 @@ def test_supervisor_returns_failure_for_hard_timeout(monkeypatch, tmp_path):
     assert result == 1
     assert updates[-1]["status"] == "failed"
     assert updates[-1]["error"] == "hard timeout exceeded"
+
+
+def test_interactive_supervisor_ignores_hard_timeout_while_session_is_alive(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "",
+        "prompt": "do work",
+        "execution_mode": "interactive",
+    }
+    active = iter([True, False])
+    monotonic = iter([0.0, 10_000.0, 10_000.0])
+    stopped = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "run_active", lambda _session: next(active))
+    monkeypatch.setattr(runner, "stop_run", lambda session: stopped.append(session))
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.time.monotonic",
+        lambda: next(monotonic),
+    )
+    monkeypatch.setattr("codex_agy_bridge.supervision.time.sleep", lambda _delay: None)
+    supervisor = RunSupervisor("run-1")
+
+    assert supervisor._monitor_until_exit() is None
+    assert stopped == []
 
 
 def test_supervisor_launch_does_not_open_terminal(monkeypatch, tmp_path):
@@ -196,3 +269,41 @@ def test_supervisor_polls_once_for_progress_and_completion(monkeypatch, tmp_path
     assert polls == [True]
     assert rendered == [{"step_index": 7}]
     assert supervisor._response() == "result DONE_MARKER"
+
+
+def test_interactive_supervisor_delivers_one_queued_prompt_per_response(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "requested_conversation_id": "conversation-1",
+        "completion_marker": "",
+        "prompt": "do work",
+        "execution_mode": "interactive",
+    }
+    sent = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "transcript_path",
+        lambda _conversation_id: tmp_path / "transcript.jsonl",
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.TmuxSession.send_input",
+        lambda _self, text, enter=True: sent.append((text, enter)),
+    )
+    interactive_input.enqueue(tmp_path, "first")
+    interactive_input.enqueue(tmp_path, "second")
+    supervisor = RunSupervisor("run-1")
+    supervisor.session = "agy-run-1"
+    supervisor.latest_response_step_index = 2
+
+    supervisor._deliver_interactive_input()
+    supervisor._deliver_interactive_input()
+    supervisor.latest_response_step_index = 5
+    supervisor._deliver_interactive_input()
+
+    assert sent == [("first", True), ("second", True)]

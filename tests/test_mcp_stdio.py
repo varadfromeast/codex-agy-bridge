@@ -75,6 +75,14 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
                 "workspace": str(tmp_path),
             },
         )
+        unexpected_start_argument = await session.call_tool(
+            "agy_start",
+            {
+                "prompt": "must not start",
+                "workspace": str(tmp_path),
+                "unexpected": 1,
+            },
+        )
 
     assert initialized.serverInfo.name == "codex-agy-bridge"
     assert initialized.instructions
@@ -82,17 +90,24 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     assert external_run_status.isError
     assert external_goal_status.isError
     assert blank_continuation.isError
+    assert unexpected_start_argument.isError
     assert "run_id" in initialized.instructions
     assert "agy_goal_create" in initialized.instructions
     assert "agy_goal_target_start" in initialized.instructions
     assert "agy_goal_status" in initialized.instructions
     assert {tool.name for tool in tools.tools} == {
-        "agy_start",
+            "agy_start",
+            "agy_interactive_start",
         "agy_continue",
         "agy_status",
         "agy_transcript",
         "agy_result",
-        "agy_cancel",
+            "agy_cancel",
+            "agy_models",
+            "agy_doctor",
+            "agy_plugins",
+            "agy_plugin_validate",
+            "agy_changelog",
         "agy_goal_create",
             "agy_goal_target_start",
             "agy_goal_status",
@@ -102,13 +117,18 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     start = next(tool for tool in tools.tools if tool.name == "agy_start")
     assert start.outputSchema is not None
     assert start.outputSchema["type"] == "object"
-    assert "visible_terminal" not in start.inputSchema["properties"]
+    assert start.inputSchema["properties"]["visible_terminal"]["default"] is None
+    assert start.inputSchema["properties"]["sandbox"]["default"] is False
+    assert "additional_directories" in start.inputSchema["properties"]
     assert (
         start.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
         is True
     )
     continuation = next(tool for tool in tools.tools if tool.name == "agy_continue")
-    assert "visible_terminal" not in continuation.inputSchema["properties"]
+    assert (
+        continuation.inputSchema["properties"]["visible_terminal"]["default"]
+        is None
+    )
     assert (
         continuation.inputSchema["properties"]["dangerously_skip_permissions"][
             "default"
@@ -116,8 +136,8 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
         is True
     )
     target = next(tool for tool in tools.tools if tool.name == "agy_goal_target_start")
-    assert "visible_terminal" not in target.inputSchema["properties"]
+    assert target.inputSchema["properties"]["visible_terminal"]["default"] is None
     assert (
         target.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
-        is True
+        is None
     )

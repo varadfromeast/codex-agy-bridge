@@ -7,13 +7,25 @@ from typing import Any, cast
 from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
 
-from codex_agy_bridge import orchestration
+from codex_agy_bridge import diagnostics, orchestration
 from codex_agy_bridge.core import STATE_ROOT, public_state
 from codex_agy_bridge.lifecycle import register_server_instance
 
 DEFAULT_MODEL = orchestration.DEFAULT_MODEL
 
-mcp = FastMCP(
+
+class StrictFastMCP(FastMCP):
+    """FastMCP server whose generated tool argument models reject extra fields."""
+
+    def add_tool(self, fn, *args, **kwargs) -> None:
+        super().add_tool(fn, *args, **kwargs)
+        name = kwargs.get("name") or fn.__name__
+        tool = self._tool_manager.get_tool(name)
+        tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
+        tool.fn_metadata.arg_model.model_rebuild(force=True)
+
+
+mcp = StrictFastMCP(
     "codex-agy-bridge",
     instructions=(
         "Use agy_start for a new Antigravity task and retain its run_id. "
@@ -23,7 +35,9 @@ mcp = FastMCP(
         "call agy_goal_create once, call agy_goal_target_start once per unique "
         "named target, then poll agy_goal_status for the aggregate result. "
         "Use agy_cancel to stop an active run. Targets support "
-        "agy_target_open_terminal and agy_target_send_text. "
+        "agy_target_open_terminal and agy_target_send_text. Use "
+        "agy_interactive_start when subsequent text must be consumed as "
+        "conversation input. Use agy_models and agy_doctor for discovery. "
         "Antigravity is agentic and the workspace is not a security boundary."
     ),
 )
@@ -37,6 +51,8 @@ def create_run(
     conversation_id: str | None,
     dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
     goal_id: str | None = None,
     target_name: str | None = None,
 ) -> dict[str, Any]:
@@ -50,6 +66,8 @@ def create_run(
             conversation_id=conversation_id,
             dangerously_skip_permissions=dangerously_skip_permissions,
             model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
             goal_id=goal_id,
             target_name=target_name,
         ),
@@ -63,10 +81,14 @@ def agy_start(
     timeout_seconds: int = 900,
     dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+    visible_terminal: bool | None = None,
 ) -> dict[str, Any]:
     """Start a new asynchronous Antigravity conversation.
 
-    The call returns immediately with a run_id. Antigravity print mode is
+    The deprecated visible_terminal field is accepted and ignored. The call
+    returns immediately with a run_id. Antigravity print mode is
     agentic; enabling dangerously_skip_permissions permits unattended commands
     and file edits with the current user's privileges.
     """
@@ -80,6 +102,41 @@ def agy_start(
                 conversation_id=None,
                 dangerously_skip_permissions=dangerously_skip_permissions,
                 model=model,
+                sandbox=sandbox,
+                additional_directories=additional_directories,
+            ),
+        )
+    )
+
+
+@mcp.tool()
+def agy_interactive_start(
+    prompt: str,
+    workspace: str,
+    timeout_seconds: int = 3600,
+    dangerously_skip_permissions: bool = False,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = True,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start a persistent interactive Antigravity session.
+
+    Completed responses do not terminate this session. Use
+    agy_target_send_text for subsequent prompts and agy_cancel to close it.
+    """
+    return public_state(
+        cast(
+            dict[str, Any],
+            orchestration.create_run(
+                prompt=prompt,
+                workspace=workspace,
+                timeout_seconds=timeout_seconds,
+                conversation_id=None,
+                dangerously_skip_permissions=dangerously_skip_permissions,
+                model=model,
+                sandbox=sandbox,
+                additional_directories=additional_directories,
+                execution_mode="interactive",
             ),
         )
     )
@@ -93,8 +150,11 @@ def agy_continue(
     timeout_seconds: int = 900,
     dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+    visible_terminal: bool | None = None,
 ) -> dict[str, Any]:
-    """Continue an exact Antigravity conversation asynchronously."""
+    """Continue an exact conversation; visible_terminal is ignored."""
     return public_state(
         cast(
             dict[str, Any],
@@ -105,6 +165,8 @@ def agy_continue(
                 conversation_id=conversation_id,
                 dangerously_skip_permissions=dangerously_skip_permissions,
                 model=model,
+                sandbox=sandbox,
+                additional_directories=additional_directories,
             ),
         )
     )
@@ -147,11 +209,44 @@ def agy_cancel(run_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def agy_models(refresh: bool = False) -> dict[str, Any]:
+    """List models currently available to the installed Antigravity CLI."""
+    return diagnostics.models(refresh=refresh)
+
+
+@mcp.tool()
+def agy_doctor(run_id: str | None = None) -> dict[str, Any]:
+    """Return bounded, read-only bridge and Antigravity diagnostics."""
+    return diagnostics.doctor(run_id=run_id)
+
+
+@mcp.tool()
+def agy_plugins() -> dict[str, Any]:
+    """List imported Antigravity plugins without changing configuration."""
+    return diagnostics.plugins()
+
+
+@mcp.tool()
+def agy_plugin_validate(path: str, workspace: str) -> dict[str, Any]:
+    """Validate an existing plugin directory contained by workspace."""
+    return diagnostics.validate_plugin(path=path, workspace=workspace)
+
+
+@mcp.tool()
+def agy_changelog() -> dict[str, str]:
+    """Return the installed Antigravity CLI changelog."""
+    return diagnostics.changelog()
+
+
+@mcp.tool()
 def agy_goal_create(
     objective: str,
     workspace: str,
     max_parallel: StrictInt = 2,
     model: str = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+    dangerously_skip_permissions: bool = True,
 ) -> dict[str, Any]:
     """Create a lightweight parent goal for bounded parallel targets."""
     return cast(
@@ -161,6 +256,9 @@ def agy_goal_create(
             workspace=workspace,
             max_parallel=max_parallel,
             model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+            dangerously_skip_permissions=dangerously_skip_permissions,
         ),
     )
 
@@ -171,9 +269,12 @@ def agy_goal_target_start(
     target_name: str,
     prompt: str,
     timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool = True,
+    dangerously_skip_permissions: bool | None = None,
+    sandbox: bool | None = None,
+    additional_directories: list[str] | None = None,
+    visible_terminal: bool | None = None,
 ) -> dict[str, Any]:
-    """Start one named goal target in a persistent visible terminal."""
+    """Start one named goal target; visible_terminal is ignored."""
     return public_state(
         cast(
             dict[str, Any],
@@ -183,6 +284,8 @@ def agy_goal_target_start(
                 prompt=prompt,
                 timeout_seconds=timeout_seconds,
                 dangerously_skip_permissions=dangerously_skip_permissions,
+                sandbox=sandbox,
+                additional_directories=additional_directories,
             ),
         )
     )
@@ -206,7 +309,7 @@ def agy_target_send_text(
     text: str,
     enter: bool = True,
 ) -> dict[str, Any]:
-    """Send text to a target's persistent tmux session."""
+    """Send a prompt to interactive mode or terminal keys to print mode."""
     return orchestration.send_text(run_id, text, enter=enter)
 
 

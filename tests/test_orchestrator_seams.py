@@ -68,10 +68,11 @@ def test_orchestrator_uses_injected_execution_session(tmp_path: Path):
         session_factory=session_factory,
     )
 
+    # Send text should send input to the session
+    mock_session._alive = True
+    orch.send_text("run-mock-123", "hello input")
+    mock_session.send_input.assert_called_with("hello input", enter=True)
+
     # Cancel should kill the session
     orch.cancel("run-mock-123")
     mock_session.kill.assert_called_once()
-
-    # Send text should send input to the session
-    orch.send_text("run-mock-123", "hello input")
-    mock_session.send_input.assert_called_with("hello input", enter=True)

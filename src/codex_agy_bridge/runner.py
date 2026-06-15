@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import signal
 import sys
 import time
@@ -12,6 +11,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from codex_agy_bridge import core
+from codex_agy_bridge.cli import AntigravityCli
 from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.state import RunState
 
@@ -31,33 +31,11 @@ COMPLETION_STABILITY_SECONDS = int(
 
 
 def build_command(state: RunState) -> list[str]:
-    local_agy = Path.home() / ".local" / "bin" / "agy"
-    agy = (
-        os.environ.get("AGY_CMD")
-        or shutil.which("agy")
-        or (str(local_agy) if local_agy.is_file() else None)
-    )
-    if not agy:
-        raise FileNotFoundError("agy is not installed or not present on PATH")
-    timeout = int(state["timeout_seconds"])
     directory = run_dir(str(state["run_id"]))
-    command = [
-        agy,
-        "--log-file",
-        str(directory / "agy.log"),
-        "--print-timeout",
-        f"{timeout}s",
-    ]
-    conversation_id = state.get("requested_conversation_id")
-    if conversation_id:
-        command.extend(["--conversation", str(conversation_id)])
-    model = state.get("model")
-    if model:
-        command.extend(["--model", str(model)])
-    if state.get("dangerously_skip_permissions"):
-        command.append("--dangerously-skip-permissions")
-    command.extend(["--print", str(state["prompt"])])
-    return command
+    return AntigravityCli().build_run_command(
+        state,
+        run_directory=directory,
+    )
 
 
 def launch_process(

@@ -92,9 +92,20 @@ def test_terminal_send_text_targets_tmux_session(monkeypatch):
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    terminal.send_text("agy-target", "yes")
+    terminal.send_text("agy-target", "yes\nsecond line")
 
     assert calls == [
-        (["tmux", "send-keys", "-t", "agy-target", "--", "yes"], {"check": True}),
+        (
+            ["tmux", "send-keys", "-t", "agy-target", "-l", "--", "yes"],
+            {"check": True},
+        ),
+        (
+            ["tmux", "send-keys", "-t", "agy-target", "M-Enter"],
+            {"check": True},
+        ),
+        (
+            ["tmux", "send-keys", "-t", "agy-target", "-l", "--", "second line"],
+            {"check": True},
+        ),
         (["tmux", "send-keys", "-t", "agy-target", "Enter"], {"check": True}),
     ]

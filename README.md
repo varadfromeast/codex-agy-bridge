@@ -19,14 +19,14 @@ and bounded parallel-goal tools over MCP.
 This project is experimental. It currently targets:
 
 - Codex CLI/app with local stdio MCP servers;
-- Antigravity CLI 1.0.7-compatible commands and trajectory files;
+- Antigravity CLI 1.0.8-compatible commands and trajectory files;
 - Python 3.11 or newer;
 - macOS plus `tmux` for persistent Terminal.app sessions.
 
-Every run executes in a persistent `tmux` session and opens Terminal.app on
-launch. Closing the Terminal window detaches from the session without stopping
-the run. Antigravity's local storage format is not a stable public API, so
-compatibility may require updates when the CLI changes.
+Every run executes in a persistent `tmux` session. Terminal.app can be attached
+on demand without stopping the run when the window closes. Antigravity's local
+storage format is not a stable public API, so compatibility may require updates
+when the CLI changes.
 
 ## Features
 
@@ -40,6 +40,9 @@ compatibility may require updates when the CLI changes.
 - Deduplicates identical active start requests.
 - Keeps separate client-owned MCP server processes from terminating each other.
 - Detects authentication, rate-limit, quota, and response-timeout conditions.
+- Supports CLI sandbox mode and up to 16 explicit additional directories.
+- Discovers models, plugins, capabilities, changelog, and bridge diagnostics.
+- Starts persistent `--prompt-interactive` sessions for conversational input.
 
 ## Install
 
@@ -151,16 +154,22 @@ Useful environment variables:
 | Tool | Purpose |
 | --- | --- |
 | `agy_start` | Start a new asynchronous conversation and return a `run_id` |
+| `agy_interactive_start` | Start a persistent interactive session |
 | `agy_continue` | Continue an exact `conversation_id` |
 | `agy_status` | Read compact status or diagnostic paths |
 | `agy_transcript` | Read bounded progress events |
 | `agy_result` | Read the final semantic response |
 | `agy_cancel` | Cancel an active run |
+| `agy_models` | List models available to the installed CLI |
+| `agy_doctor` | Report bounded bridge, CLI, tmux, storage, and run diagnostics |
+| `agy_plugins` | List imported plugins without mutating configuration |
+| `agy_plugin_validate` | Validate a plugin directory contained by a workspace |
+| `agy_changelog` | Read the installed CLI changelog |
 | `agy_goal_create` | Create a bounded parallel-work container |
 | `agy_goal_target_start` | Start one named target in a goal |
 | `agy_goal_status` | Aggregate goal and target status |
 | `agy_target_open_terminal` | Reattach Terminal.app to an existing run |
-| `agy_target_send_text` | Send text to a run's `tmux` session |
+| `agy_target_send_text` | Send interactive prompts or print-mode terminal keys |
 
 Typical call flow:
 
@@ -176,6 +185,9 @@ run. Every start and continuation also requires an absolute workspace path.
 
 ## How It Works
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed process
+topology, lifecycle diagrams, and module responsibilities.
+
 ```text
 Codex
   |
@@ -188,7 +200,7 @@ orchestration.py -- persists state --> core.py / state.py
   |
   | starts detached Python worker
   v
-runner.py --> supervision.py -- launches --> agy --print
+runner.py --> supervision.py -- launches --> agy print/interactive
   |                         |
   |                         v
   |                  Antigravity trajectory
@@ -201,11 +213,13 @@ runner.py --> supervision.py -- launches --> agy --print
 1. `server.py` exposes stable MCP tools and delegates behavior.
 2. `orchestration.py` validates requests, enforces parallel limits, deduplicates
    active retries, persists initial state, and starts a detached runner.
-3. `runner.py` provides the detached worker entrypoint and process adapters.
-4. `supervision.py` launches `agy --print`, discovers the resulting conversation,
+3. `cli.py` owns executable discovery, capability probing, read-only commands,
+   and run command construction.
+4. `runner.py` provides the detached worker entrypoint and process adapters.
+5. `supervision.py` launches print or interactive mode and discovers the conversation,
    streams sanitized progress, observes completion, and records terminal state.
-5. `core.py` atomically persists JSON and reads Antigravity trajectory JSONL.
-6. `terminal.py` owns persistent `tmux` execution and Terminal.app interaction.
+6. `core.py` atomically persists JSON and reads Antigravity trajectory JSONL.
+7. `terminal.py` owns persistent `tmux` execution and Terminal.app interaction.
 
 Each prompt receives a unique completion marker. A response is considered
 complete only after that marker remains the latest response for a stability
@@ -220,28 +234,32 @@ Read these in this order to understand the product:
    - Start here to see every tool and its arguments.
 2. `src/codex_agy_bridge/orchestration.py`
    - The product's control plane.
-   - Owns validation, deduplication, goals, concurrency, cancellation, and
+   - Owns goals, concurrency, cancellation, durable reservation, and
      detached-run startup.
-3. `src/codex_agy_bridge/runner.py`
+3. `src/codex_agy_bridge/run_request.py`
+   - The Run Request module.
+   - Owns request validation, workspace normalization, execution-policy
+     capability checks, deduplication identity, and initial persisted state.
+4. `src/codex_agy_bridge/runner.py`
    - The detached-worker entrypoint and process adapter.
    - Owns command construction, tmux launch, and process shutdown.
-4. `src/codex_agy_bridge/supervision.py`
+5. `src/codex_agy_bridge/supervision.py`
    - The lifecycle supervision module for one run.
    - Owns conversation discovery, incremental transcript polling, progress
      monitoring, completion detection, timeouts, and cancellation.
-5. `src/codex_agy_bridge/transcript.py`
+6. `src/codex_agy_bridge/transcript.py`
    - Provides one supervisor-owned `TranscriptHarvester` per conversation.
    - Retains only file identity, byte offset, a partial record, the latest step,
      and the latest completed response.
-6. `src/codex_agy_bridge/core.py`
+7. `src/codex_agy_bridge/core.py`
    - The persistence and Antigravity compatibility layer.
    - Owns state paths, atomic writes, stateless transcript reads, response
      extraction, and bounded per-run failure classification.
-7. `src/codex_agy_bridge/state.py`
+8. `src/codex_agy_bridge/state.py`
    - The persisted data contracts and run-state machine.
-8. `src/codex_agy_bridge/terminal.py`
+9. `src/codex_agy_bridge/terminal.py`
    - The macOS terminal adapter built on `tmux` and AppleScript.
-9. `src/codex_agy_bridge/lifecycle.py`
+10. `src/codex_agy_bridge/lifecycle.py`
    - Registration and stale cleanup for client-owned MCP server processes.
 
 Public transcript requests remain stateless full reads. Provider classification
@@ -286,10 +304,11 @@ Antigravity is an agentic CLI. It can read and write files, execute commands,
 and access the network with the current user's privileges. This bridge is not a
 sandbox or security boundary.
 
-`dangerously_skip_permissions` currently defaults to `true`. Set it to `false`
-when unattended execution is not appropriate. A workspace scopes conversation
-context; it does not restrict filesystem or network access. Use a container or
-VM when actual isolation is required.
+`dangerously_skip_permissions` defaults to `true` for print-mode tools. Set it
+to `false` when unattended execution is not appropriate. `sandbox=true` enables
+the CLI's terminal restrictions independently of permission auto-approval.
+`additional_directories` adds only explicitly validated existing directories.
+A workspace scopes conversation context; it is not itself a security boundary.
 
 The bridge does not read or copy Antigravity OAuth credentials. It invokes the
 installed `agy` binary and reads ordinary local conversation metadata and

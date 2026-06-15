@@ -92,8 +92,13 @@ class TmuxSession:
 
     @property
     def returncode(self) -> int | None:
-        """Return 0 for tmux runs since they run in background shell."""
-        return 0
+        """Read the child exit code recorded by the tmux shell."""
+        path = self.run_dir / "agy.exit-code"
+        try:
+            value = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
+        return value if 0 <= value <= 255 else None
 
     def send_input(self, text: str, enter: bool = True) -> None:
         """Send keys directly into the tmux session pane."""

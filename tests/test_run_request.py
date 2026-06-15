@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import pytest
+
+from codex_agy_bridge.run_request import RunRequest
+
+
+class FakeCli:
+    def capabilities(self):
+        return type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )()
+
+    def validate_model(self, model):
+        if model == "missing":
+            raise ValueError("unknown model")
+
+
+def test_run_request_prepares_identity_and_initial_state(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+
+    request = RunRequest.prepare(
+        prompt="do work  ",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+        dangerously_skip_permissions=False,
+        model=None,
+        default_model="default",
+        sandbox=True,
+        additional_directories=[str(extra)],
+        execution_mode="print",
+        goal_id=None,
+        target_name=None,
+        cli=FakeCli(),
+    )
+    state = request.initial_state(
+        run_id="run-1",
+        now="now",
+        previous_conversation_id="previous",
+        tmux_session="agy-run-1",
+        completion_marker="DONE",
+    )
+
+    assert request.workspace == workspace.resolve()
+    assert request.additional_directories == (str(extra.resolve()),)
+    assert request.request_key
+    assert state["request_key"] == request.request_key
+    assert state["prompt"].endswith("DONE")
+    assert state["previous_conversation_id"] == "previous"
+
+
+def test_interactive_run_request_does_not_add_completion_marker(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    request = RunRequest.prepare(
+        prompt="continue talking",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+        dangerously_skip_permissions=False,
+        model=None,
+        default_model="default",
+        sandbox=False,
+        additional_directories=[],
+        execution_mode="interactive",
+        goal_id=None,
+        target_name=None,
+        cli=FakeCli(),
+    )
+
+    state = request.initial_state(
+        run_id="run-1",
+        now="now",
+        previous_conversation_id=None,
+        tmux_session="agy-run-1",
+        completion_marker="ignored",
+    )
+
+    assert state["completion_marker"] == ""
+    assert state["prompt"] == "continue talking"
+
+
+def test_run_request_rejects_duplicate_additional_directories(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+
+    with pytest.raises(ValueError, match="duplicate"):
+        RunRequest.prepare(
+            prompt="work",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            dangerously_skip_permissions=True,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[str(extra), str(extra)],
+            execution_mode="print",
+            goal_id=None,
+            target_name=None,
+            cli=FakeCli(),
+        )
+
+
+def test_run_request_rejects_nul_prompt(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="prompt must not contain NUL"):
+        RunRequest.prepare(
+            prompt="\x00",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            dangerously_skip_permissions=False,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
+            goal_id=None,
+            target_name=None,
+            cli=FakeCli(),
+        )
+
+
+def test_run_request_rejects_oversized_prompt(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="prompt exceeds"):
+        RunRequest.prepare(
+            prompt="x" * 100_001,
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            dangerously_skip_permissions=False,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
+            goal_id=None,
+            target_name=None,
+            cli=FakeCli(),
+        )
+
+
+def test_additional_directory_order_is_canonical(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first = tmp_path / "first"
+    first.mkdir()
+    second = tmp_path / "second"
+    second.mkdir()
+
+    request_a = RunRequest.prepare(
+        prompt="work",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+        dangerously_skip_permissions=False,
+        model=None,
+        default_model="default",
+        sandbox=False,
+        additional_directories=[str(first), str(second)],
+        execution_mode="print",
+        goal_id=None,
+        target_name=None,
+        cli=FakeCli(),
+    )
+    request_b = RunRequest.prepare(
+        prompt="work",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+        dangerously_skip_permissions=False,
+        model=None,
+        default_model="default",
+        sandbox=False,
+        additional_directories=[str(second), str(first)],
+        execution_mode="print",
+        goal_id=None,
+        target_name=None,
+        cli=FakeCli(),
+    )
+
+    assert request_a.additional_directories == request_b.additional_directories
+    assert request_a.request_key == request_b.request_key

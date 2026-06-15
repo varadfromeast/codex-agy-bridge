@@ -119,6 +119,9 @@ def create_run(
     conversation_id: str | None,
     dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+    execution_mode: str = "print",
     goal_id: str | None = None,
     target_name: str | None = None,
 ) -> RunState:
@@ -143,6 +146,9 @@ def create_run(
         conversation_id=conversation_id,
         dangerously_skip_permissions=dangerously_skip_permissions,
         model=model,
+        sandbox=sandbox,
+        additional_directories=additional_directories,
+        execution_mode=execution_mode,
         goal_id=goal_id,
         target_name=target_name,
     )
@@ -220,6 +226,9 @@ def create_goal(
     workspace: str,
     max_parallel: int = 2,
     model: str = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+    dangerously_skip_permissions: bool = True,
 ) -> GoalState:
     """Create a new parent goal.
 
@@ -237,6 +246,9 @@ def create_goal(
         workspace=workspace,
         max_parallel=max_parallel,
         model=model,
+        sandbox=sandbox,
+        additional_directories=additional_directories,
+        dangerously_skip_permissions=dangerously_skip_permissions,
     )
 
 
@@ -246,7 +258,9 @@ def start_goal_target(
     target_name: str,
     prompt: str,
     timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool = True,
+    dangerously_skip_permissions: bool | None = None,
+    sandbox: bool | None = None,
+    additional_directories: list[str] | None = None,
 ) -> RunState:
     """Create and launch a run linked to a parent goal target.
 
@@ -265,6 +279,8 @@ def start_goal_target(
         prompt=prompt,
         timeout_seconds=timeout_seconds,
         dangerously_skip_permissions=dangerously_skip_permissions,
+        sandbox=sandbox,
+        additional_directories=additional_directories,
     )
 
 

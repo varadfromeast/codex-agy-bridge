@@ -37,6 +37,9 @@ def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
             conversation_id=None,
             dangerously_skip_permissions=True,
             model=orchestration.DEFAULT_MODEL,
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
             goal_id=None,
             target_name=None,
         ),
@@ -62,7 +65,97 @@ def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
     assert spawned == []
 
 
-def test_send_text_uses_run_tmux_session(monkeypatch, tmp_path):
+def test_sandbox_and_added_directories_participate_in_deduplication(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    process_manager = ConcurrentProcessManager()
+    process_manager.release_first.set()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        process_manager=process_manager,
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.AntigravityCli.capabilities",
+        lambda _self: type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )(),
+    )
+
+    first = orchestrator.create_run(
+        prompt="same request",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+        sandbox=True,
+        additional_directories=[str(extra)],
+    )
+    second = orchestrator.create_run(
+        prompt="same request",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+        sandbox=False,
+        additional_directories=[str(extra)],
+    )
+
+    assert first["run_id"] != second["run_id"]
+    assert first["sandbox"] is True
+    assert first["additional_directories"] == [str(extra.resolve())]
+
+
+@pytest.mark.parametrize(
+    "directories, message",
+    [
+        (["missing"], "not a directory"),
+        (["duplicate", "duplicate"], "duplicate"),
+    ],
+)
+def test_added_directories_are_validated(
+    tmp_path, monkeypatch, directories, message
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    duplicate = tmp_path / "duplicate"
+    duplicate.mkdir()
+    values = [
+        str(duplicate) if value == "duplicate" else str(tmp_path / value)
+        for value in directories
+    ]
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state")
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.AntigravityCli.capabilities",
+        lambda _self: type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )(),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        orchestrator.create_run(
+            prompt="work",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            additional_directories=values,
+        )
+
+
+def test_interactive_send_text_queues_submitted_prompt(monkeypatch, tmp_path):
     sent = []
     state_root = isolate_state_root(monkeypatch, tmp_path)
 
@@ -71,10 +164,12 @@ def test_send_text_uses_run_tmux_session(monkeypatch, tmp_path):
         "run_id": "run-1",
         "status": "running",
         "tmux_session": "agy-target",
+        "execution_mode": "interactive",
     }
 
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
     monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: True)
 
     monkeypatch.setattr(
         orchestration.terminal,
@@ -84,8 +179,56 @@ def test_send_text_uses_run_tmux_session(monkeypatch, tmp_path):
 
     result = orchestration.send_text("run-1", "yes")
 
-    assert sent == [("agy-target", "yes", True)]
+    assert sent == []
+    assert (state_root / "runs" / "run-1" / "interactive-input.json").exists()
     assert result["sent"] is True
+    assert result["execution_mode"] == "interactive"
+    assert result["delivery"] == "queued_interactive_prompt"
+
+
+def test_interactive_unsubmitted_text_uses_run_tmux_session(monkeypatch, tmp_path):
+    sent = []
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "interactive",
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: True)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "send_text",
+        lambda session, text, *, enter=True: sent.append((session, text, enter)),
+    )
+
+    orchestration.send_text("run-1", "buffered", enter=False)
+    orchestration.send_text("run-1", "", enter=True)
+
+    assert sent == [
+        ("agy-target", "buffered", False),
+        ("agy-target", "", True),
+    ]
+
+
+def test_interactive_submitted_text_rejects_dead_session(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "interactive",
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: False)
+
+    with pytest.raises(ValueError, match="not running"):
+        orchestration.send_text("run-1", "must not queue")
 
 
 def test_open_terminal_rejects_stopped_tmux_session(monkeypatch, tmp_path):
@@ -277,3 +420,57 @@ def test_concurrent_goal_targets_preserve_both_registrations(tmp_path):
     persisted = orchestrator.load_goal(goal["goal_id"])
     assert set(persisted["targets"]) == {"alpha", "beta"}
     assert {result["target_name"] for result in results} == {"alpha", "beta"}
+
+
+def test_goal_target_inherits_execution_policy(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    process_manager = ConcurrentProcessManager()
+    process_manager.release_first.set()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        process_manager=process_manager,
+    )
+    goal = orchestrator.create_goal(
+        objective="policy inheritance",
+        workspace=str(workspace),
+        sandbox=False,
+        additional_directories=[str(extra)],
+        dangerously_skip_permissions=False,
+    )
+
+    target = orchestrator.start_goal_target(
+        goal_id=goal["goal_id"],
+        target_name="alpha",
+        prompt="work",
+    )
+
+    assert target["sandbox"] is False
+    assert target["additional_directories"] == [str(extra)]
+    assert target["dangerously_skip_permissions"] is False
+
+
+def test_goal_rejects_unknown_model_before_persistence(tmp_path):
+    class RejectingCli:
+        def validate_model(self, model):
+            raise ValueError(f"unknown Antigravity model: {model}")
+
+    store = MemoryRunStore()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        store=store,
+        cli=RejectingCli(),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="unknown Antigravity model"):
+        orchestrator.create_goal(
+            objective="invalid model",
+            workspace=str(workspace),
+            model="missing",
+        )
+
+    assert store.goals == {}
