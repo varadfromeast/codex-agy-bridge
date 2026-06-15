@@ -51,7 +51,6 @@ def test_orchestrator_uses_injected_execution_session(tmp_path: Path):
         "workspace": str(tmp_path),
         "prompt": "hello",
         "tmux_session": "agy-test-session",
-        "visible_terminal": True,
     }
     store.save_run("run-mock-123", run_state)
 

@@ -1,0 +1,195 @@
+# Live MCP Stress Campaign
+
+Completed live scenarios: 100 / 100
+
+Only direct calls through the running `mcp__codex_agy_bridge` server count
+toward this total. Repository tests are added only after a live call exposes a
+defect.
+
+## Live Batch 1: API Error Isolation And Goal Validation
+
+- [x] 01. Unknown run status returns a bounded tool error.
+- [x] 02. Unknown run transcript returns a bounded tool error.
+- [x] 03. Unknown run result returns a bounded tool error.
+- [x] 04. Unknown run cancellation returns a bounded tool error.
+- [x] 05. Unknown goal status returns a bounded tool error.
+- [x] 06. Goal creation rejects a missing workspace.
+- [x] 07. Run creation rejects a timeout below the supported minimum.
+- [x] 08. Valid goal creation succeeds and normalizes the workspace path.
+- [x] 09. Empty goal status remains pending with no targets.
+- [x] 10. Goal target creation rejects a whitespace-only target name.
+- [x] 11. Target creation for an unknown goal returns a bounded tool error.
+
+Result: all passed; server remained responsive after every error.
+
+## Live Batch 2: Run Lifecycle And Bounds
+
+- [x] 12. Start a safe short-lived headless run.
+- [x] 13. Immediately query compact status while the run is active.
+- [x] 14. Query full status and verify private fields remain hidden.
+- [x] 15. Query transcript before a conversation ID is observed.
+- [x] 16. Query transcript with extreme negative bounds.
+- [x] 17. Query transcript with extreme positive bounds.
+- [x] 18. Query result before terminal completion.
+- [x] 19. Cancel during a completion race without overwriting completion.
+- [x] 20. Repeat cancellation and verify idempotence.
+- [x] 21. Query final status, result, and transcript after completion.
+
+Result: all passed. Run `2026-06-14T180852.963716+0000-390f6f2e`
+completed with `LIVE_STRESS_OK`; status, result, and transcript converged.
+
+## Live Batch 3: Deduplication And Global Capacity
+
+- [x] 22. Submit four concurrent identical starts and verify one run ID.
+- [x] 23. Verify the duplicate run remains observable.
+- [x] 24. Start a second distinct held run.
+- [x] 25. Start a third distinct held run.
+- [x] 26. Start a fourth distinct held run.
+- [x] 27. Reject a fifth distinct run at global capacity.
+- [x] 28. Cancel all four active runs concurrently.
+- [x] 29. Repeat cancellation across all runs.
+- [x] 30. Verify all runs become terminal.
+- [x] 31. Start a new run after capacity is released.
+
+Result: all passed. Concurrent identical starts returned run
+`2026-06-14T180945.898968+0000-0d71cb7f`; the fifth distinct start was
+rejected at four active runs; all four converged to `canceled`; a replacement
+run started immediately.
+
+## Live Batch 4: Goal Target Lifecycle
+
+- [x] 32. Create a bounded goal with max_parallel=2.
+- [x] 33. Start held target alpha.
+- [x] 34. Reject duplicate target alpha.
+- [x] 35. Start held target beta.
+- [x] 36. Reject target gamma at goal capacity.
+- [x] 37. Aggregate both active targets as running.
+- [x] 38. Cancel alpha and retain beta as running.
+- [x] 39. Cancel beta and aggregate terminal canceled targets coherently.
+- [x] 40. Reject opening a terminal for a headless target.
+- [x] 41. Reject sending text to a headless target.
+
+Result: one defect found and fixed. The live server returned `pending` after
+both targets were canceled. `RunnerOrchestrator.goal_status` now returns
+`canceled` for terminal target sets containing cancellation. Regression:
+`test_goal_with_canceled_targets_is_not_reported_pending`. Full suite:
+86 passed.
+
+## Live Batch 5: Visible Terminal Controls
+
+- [x] 42. Start a safe held run with a visible terminal.
+- [x] 43. Verify status exposes a tmux session but no private prompt.
+- [x] 44. Send text without Enter.
+- [x] 45. Send text with Enter.
+- [x] 46. Open the visible target terminal.
+- [x] 47. Read transcript while terminal run is active.
+- [x] 48. Cancel the visible target.
+- [x] 49. Verify visible target reaches a terminal state.
+- [x] 50. Send text after terminal shutdown and receive a bounded error.
+- [x] 51. Open terminal after shutdown and receive a bounded error.
+
+Result: one defect found and fixed. A stopped tmux target rejected input but
+`agy_target_open_terminal` falsely returned `opened: true`.
+`RunnerOrchestrator.open_terminal` now checks session liveness first.
+Regression: `test_open_terminal_rejects_stopped_tmux_session`.
+
+## Live Batch 6: Exact Continuation And Conversation IDs
+
+- [x] 52. Continue an exact completed conversation safely.
+- [x] 53. Submit concurrent identical continuation requests and deduplicate.
+- [x] 54. Observe continuation status while active.
+- [x] 55. Read continuation transcript.
+- [x] 56. Read continuation result after terminal completion.
+- [x] 57. Start continuation with an unknown conversation ID.
+- [x] 58. Observe bounded failure/status for unknown continuation.
+- [x] 59. Cancel unknown continuation safely.
+- [x] 60. Reject whitespace-only conversation ID.
+- [x] 61. Verify server remains responsive after malformed continuation.
+
+Result: two defects found and fixed. Whitespace-only continuation IDs spawned
+doomed processes; they now fail before spawn. Active continuation results
+could expose a prior trailing internal completion marker; `clean_response`
+now strips trailing internal markers while preserving inline text.
+
+## Live Batch 7: Identifier And Filesystem Boundaries
+
+- [x] 62. Reject an absolute run ID that points outside state storage.
+- [x] 63. Reject a traversal run ID that points outside state storage.
+- [x] 64. Reject an absolute goal ID that points outside state storage.
+- [x] 65. Reject a traversal goal ID that points outside state storage.
+- [x] 66. Handle an empty run ID with a bounded error.
+- [x] 67. Handle an empty goal ID with a bounded error.
+- [x] 68. Handle dot-segment run IDs with a bounded error.
+- [x] 69. Handle slash-only goal IDs with a bounded error.
+- [x] 70. Handle a very large unknown run ID without destabilizing the server.
+- [x] 71. Verify normal status remains responsive after boundary attacks.
+
+Result: a high-severity disclosure defect found and fixed. Absolute and
+traversal run/goal IDs read valid JSON state outside the configured root, and
+oversized IDs leaked raw filesystem errors. Central path constructors now
+require one nonempty path segment of at most 255 UTF-8 bytes; the same guard
+protects transcript paths. Full suite: 95 passed.
+
+## Live Batch 8: Creation Boundary Values
+
+- [x] 72. Reject an empty start prompt.
+- [x] 73. Reject a whitespace-only start prompt.
+- [x] 74. Reject a workspace path that is a file.
+- [x] 75. Reject timeout 9.
+- [x] 76. Reject timeout 86401.
+- [x] 77. Accept timeout lower boundary 10.
+- [x] 78. Accept timeout upper boundary 86400.
+- [x] 79. Reject goal max_parallel 0.
+- [x] 80. Reject goal max_parallel 5.
+- [x] 81. Accept a null model by applying the default model.
+
+Result: all passed. The three accepted boundary runs were canceled.
+
+## Live Batch 9: Transcript And Result Bounding
+
+- [x] 82. Transcript limit 0 remains bounded.
+- [x] 83. Transcript negative limit remains bounded.
+- [x] 84. Transcript huge limit remains capped.
+- [x] 85. Content length 0 remains bounded.
+- [x] 86. Content length huge remains capped.
+- [x] 87. Content-disabled transcript hides raw content.
+- [x] 88. Large after_step returns no events.
+- [x] 89. Compact status returns only compact fields.
+- [x] 90. Full status hides raw prompt and completion marker.
+- [x] 91. Completed result hides the internal completion marker.
+
+Result: all passed. Raw content and marker-bearing trajectory records were
+exposed only when `include_content=true`, as documented.
+
+## Live Batch 10: Schema And Goal Persistence Edges
+
+- [x] 92. Reject boolean max_parallel.
+- [x] 93. Reject fractional max_parallel at the MCP schema boundary.
+- [x] 94. Reject an empty goal model.
+- [x] 95. Ensure invalid goal creation cannot persist unreadable state.
+- [x] 96. Reject a blank goal-target prompt without registering a target.
+- [x] 97. Reject a below-minimum goal-target timeout without registration.
+- [x] 98. Verify failed target starts leave the goal unchanged.
+- [x] 99. Reject a non-string run ID at the MCP schema boundary.
+- [x] 100. Verify normal result remains responsive after all edge calls.
+
+Result: two defects found and fixed. Boolean `max_parallel` was coerced to
+integer 1 by the MCP schema; the tool now uses a strict integer contract.
+Empty goal models persisted unreadable state; creation now validates model
+before saving.
+
+## Campaign Summary
+
+- 100 direct calls/scenarios executed through `mcp__codex_agy_bridge`.
+- 7 defects found and fixed.
+- Coverage included error isolation, run lifecycle, cancellation races,
+  deduplication, global and goal capacity, visible terminals, continuation,
+  filesystem boundaries, creation bounds, transcript/result bounding, and
+  MCP schema coercion.
+- Fresh-process stdio integration verifies fixes that cannot hot-reload into
+  the already-running MCP process.
+
+After each live batch: record exact outcomes, add focused regression tests for
+confirmed defects, run GitNexus impact analysis before implementation edits,
+fix the defects, verify the full suite, and design the next live batch from
+remaining gaps.

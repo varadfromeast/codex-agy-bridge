@@ -78,7 +78,6 @@ transcript.write_text(
         conversation_id=None,
         dangerously_skip_permissions=False,
         model=None,
-        visible_terminal=False,
     )
 
     deadline = time.monotonic() + 10

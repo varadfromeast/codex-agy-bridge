@@ -23,9 +23,3 @@ class ConcurrencyLimitExceeded(BridgeError, RuntimeError):
     """Raised when the parallel run limit is reached."""
 
     pass
-
-
-class AntigravityAuthRequired(BridgeError, ValueError):
-    """Raised when preflight auth check fails for headless runs."""
-
-    pass

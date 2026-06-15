@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
+
+import pytest
 
 from codex_agy_bridge import core
 
@@ -82,6 +83,89 @@ def test_reads_compact_steps_and_final_response(tmp_path, monkeypatch):
             "content": "fini",
         },
     ]
+
+
+def test_public_transcript_reads_are_stateless(tmp_path, monkeypatch):
+    brain = tmp_path / "brain"
+    monkeypatch.setattr(core, "BRAIN_DIR", brain)
+    transcript = (
+        brain / "conversation-incremental" / ".system_generated" / "logs"
+        / "transcript.jsonl"
+    )
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps(
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "first",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    original_loads = core.json.loads
+    parsed = 0
+
+    def counting_loads(value):
+        nonlocal parsed
+        parsed += 1
+        return original_loads(value)
+
+    monkeypatch.setattr(core.json, "loads", counting_loads)
+
+    assert core.final_response("conversation-incremental") == "first"
+    assert core.final_response("conversation-incremental") == "first"
+    assert parsed == 2
+
+    with transcript.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "step_index": 2,
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "content": "second",
+                }
+            )
+            + "\n"
+        )
+
+    assert core.final_response("conversation-incremental") == "second"
+    assert core.compact_steps("conversation-incremental", after_step=1)[-1][
+        "step_index"
+    ] == 2
+    assert parsed == 6
+
+
+def test_transcript_cache_handles_partial_lines_and_truncation(tmp_path, monkeypatch):
+    brain = tmp_path / "brain"
+    monkeypatch.setattr(core, "BRAIN_DIR", brain)
+    transcript = (
+        brain / "conversation-changing" / ".system_generated" / "logs"
+        / "transcript.jsonl"
+    )
+    transcript.parent.mkdir(parents=True)
+    first = {"step_index": 1, "source": "MODEL", "type": "RUN_COMMAND"}
+    second = {"step_index": 2, "source": "MODEL", "type": "RUN_COMMAND"}
+    encoded_second = json.dumps(second)
+    transcript.write_text(
+        json.dumps(first) + "\n" + encoded_second[:10],
+        encoding="utf-8",
+    )
+
+    assert core.read_steps("conversation-changing") == [first]
+
+    with transcript.open("a", encoding="utf-8") as handle:
+        handle.write(encoded_second[10:] + "\n")
+    assert core.read_steps("conversation-changing") == [first, second]
+
+    replacement = {"step_index": 9, "source": "SYSTEM", "type": "ERROR_MESSAGE"}
+    transcript.write_text(json.dumps(replacement) + "\n", encoding="utf-8")
+    assert core.read_steps("conversation-changing") == [replacement]
 
 
 def test_compact_steps_exposes_tool_names_and_bounded_errors(tmp_path, monkeypatch):
@@ -195,6 +279,16 @@ def test_removes_internal_completion_marker():
     )
 
 
+def test_removes_prior_trailing_internal_completion_marker():
+    assert (
+        core.clean_response(
+            "finished\nAGY_RUN_COMPLETE_deadbeef",
+            "AGY_RUN_COMPLETE_current",
+        )
+        == "finished"
+    )
+
+
 def test_classifies_provider_health_from_recent_log(tmp_path):
     log = tmp_path / "agy.log"
     log.write_text("You are not logged into Antigravity\n", encoding="utf-8")
@@ -210,6 +304,18 @@ def test_classifies_provider_health_from_recent_log(tmp_path):
     assert core.provider_health(log) == {"status": "quota_exhausted"}
 
 
+def test_provider_health_reads_a_bounded_binary_tail(tmp_path, monkeypatch):
+    log = tmp_path / "agy.log"
+    log.write_bytes(b"x" * 120_000 + b"\napplyAuthResult: consumer\n")
+
+    def fail_read_text(*_args, **_kwargs):
+        raise AssertionError("provider health must not read the entire log")
+
+    monkeypatch.setattr(type(log), "read_text", fail_read_text)
+
+    assert core.provider_health(log) == {"status": "authenticated"}
+
+
 def test_run_provider_health_reports_response_timeout_action(tmp_path):
     (tmp_path / "agy.stdout.log").write_text(
         "Error: timed out waiting for response\n",
@@ -222,24 +328,6 @@ def test_run_provider_health_reports_response_timeout_action(tmp_path):
     assert "agy_target_send_text" in health["action"]
 
 
-def test_latest_provider_health_uses_most_recent_known_run(tmp_path):
-    state_root = tmp_path / "state"
-    older = state_root / "runs" / "older"
-    newer = state_root / "runs" / "newer"
-    older.mkdir(parents=True)
-    newer.mkdir(parents=True)
-    (older / "agy.log").write_text("applyAuthResult: consumer\n", encoding="utf-8")
-    (newer / "agy.log").write_text(
-        "failed to get OAuth token\n",
-        encoding="utf-8",
-    )
-    newer_time = older.stat().st_mtime + 10
-    os.utime(newer / "agy.log", (newer_time, newer_time))
-
-    health = core.latest_provider_health(state_root)
-
-    assert health["status"] == "auth_interaction_required"
-    assert health["run_id"] == "newer"
 
 
 def test_active_runs_reserves_queued_run_before_runner_pid_exists(tmp_path):
@@ -258,3 +346,23 @@ def test_active_runs_reserves_queued_run_before_runner_pid_exists(tmp_path):
     core.atomic_write_json(active_dir / run_id, {"run_id": run_id})
 
     assert [state["run_id"] for state in core.active_runs(tmp_path)] == [run_id]
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "/tmp/external",
+        "../external",
+        "nested/external",
+        ".",
+        "..",
+        "x" * 256,
+    ],
+)
+def test_state_paths_reject_unsafe_identifiers(tmp_path, identifier):
+    with pytest.raises(ValueError, match="run_id"):
+        core.run_dir(identifier, tmp_path)
+    with pytest.raises(ValueError, match="goal_id"):
+        core.goal_dir(identifier, tmp_path)
+    with pytest.raises(ValueError, match="conversation_id"):
+        core.transcript_path(identifier)

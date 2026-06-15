@@ -30,12 +30,42 @@ def test_terminal_launch_owns_tmux_setup(monkeypatch, tmp_path):
         "-c",
         str(tmp_path),
     ]
-    assert calls[0][0][7:9] == ["sh", "-c"]
-    script = calls[0][0][9]
+    shell_index = calls[0][0].index("sh")
+    assert calls[0][0][shell_index : shell_index + 2] == ["sh", "-c"]
+    script = calls[0][0][shell_index + 2]
     assert "/usr/local/bin/agy --print work" in script
     assert "tail -n +1 -F" in script
     assert "terminal-progress.log" in script
     assert calls[1][0][:5] == ["tmux", "pipe-pane", "-o", "-t", "agy-target"]
+
+
+def test_terminal_launch_passes_bridge_environment_to_tmux_session(
+    monkeypatch, tmp_path
+):
+    calls = []
+    monkeypatch.setenv("AGY_CMD", "/tmp/fake-agy")
+    monkeypatch.setenv("AGY_BRIDGE_STATE_DIR", "/tmp/bridge-state")
+    monkeypatch.setenv("AGY_BRIDGE_AGY_ROOT", "/tmp/agy-root")
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    terminal.launch(
+        "agy-target",
+        ["/tmp/fake-agy", "--print", "work"],
+        workspace=str(tmp_path),
+        terminal_log=tmp_path / "terminal.log",
+        progress_log=tmp_path / "terminal-progress.log",
+        stdout_log=tmp_path / "agy.stdout.log",
+        stderr_log=tmp_path / "agy.stderr.log",
+    )
+
+    command = calls[0][0]
+    assert command[7:9] == ["-e", "AGY_CMD=/tmp/fake-agy"]
+    assert "AGY_BRIDGE_STATE_DIR=/tmp/bridge-state" in command
+    assert "AGY_BRIDGE_AGY_ROOT=/tmp/agy-root" in command
 
 
 def test_terminal_attach_opens_terminal_app(monkeypatch):

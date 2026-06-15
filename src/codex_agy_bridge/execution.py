@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import os
-import signal
-import subprocess
-import time
-from contextlib import suppress
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from codex_agy_bridge import terminal
-from codex_agy_bridge.core import process_alive
 
 
 class ExecutionSession(Protocol):
@@ -56,95 +50,6 @@ class ExecutionSession(Protocol):
             Integer return code or None if active/unavailable
         """
         ...
-
-
-class HeadlessSession:
-    """Session adapter for running raw background CLI subprocesses."""
-
-    def __init__(self, run_dir: Path, pid: int | None = None) -> None:
-        """Initialize HeadlessSession.
-
-        Args:
-            run_dir: Directory containing logs
-            pid: Optional existing process ID to wrap
-        """
-        self.run_dir = run_dir
-        self.pid = pid
-        self.process: subprocess.Popen[bytes] | None = None
-        self._stdout_file: Any = None
-        self._stderr_file: Any = None
-
-    def start(self, run_id: str, command: list[str], workspace: Path) -> None:
-        """Spawn a detached background subprocess."""
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        self._stdout_file = (self.run_dir / "agy.stdout.log").open("ab")
-        self._stderr_file = (self.run_dir / "agy.stderr.log").open("ab")
-        self.process = subprocess.Popen(
-            command,
-            cwd=str(workspace),
-            stdin=subprocess.DEVNULL,
-            stdout=self._stdout_file,
-            stderr=self._stderr_file,
-            start_new_session=True,
-        )
-        self.pid = self.process.pid
-
-    def _close_log_handles(self) -> None:
-        """Close stdout/stderr log file handles if open."""
-        if self._stdout_file:
-            with suppress(OSError):
-                self._stdout_file.close()
-            self._stdout_file = None
-        if self._stderr_file:
-            with suppress(OSError):
-                self._stderr_file.close()
-            self._stderr_file = None
-
-    def kill(self) -> None:
-        """Terminate the subprocess group using TERM and KILL signals."""
-        target_pid = self.pid or (self.process.pid if self.process else None)
-        if target_pid:
-            try:
-                gpid = os.getpgid(target_pid)
-                with suppress(ProcessLookupError, PermissionError):
-                    os.killpg(gpid, signal.SIGTERM)
-                time.sleep(0.5)
-                if process_alive(target_pid):
-                    with suppress(ProcessLookupError, PermissionError):
-                        os.killpg(gpid, signal.SIGKILL)
-            except (OSError, ValueError):
-                with suppress(ProcessLookupError, PermissionError):
-                    os.kill(target_pid, signal.SIGKILL)
-        self._close_log_handles()
-
-    def is_alive(self) -> bool:
-        """Poll the subprocess or check POSIX signal lookup."""
-        if self.process is not None:
-            return self.process.poll() is None
-        if self.pid:
-            return process_alive(self.pid)
-        return False
-
-    @property
-    def returncode(self) -> int | None:
-        """Retrieve returncode of subprocess."""
-        return self.process.returncode if self.process else None
-
-    def send_input(self, text: str, enter: bool = True) -> None:
-        """Raise ValueError as headless runs do not accept inputs."""
-        raise ValueError("Headless runs do not support sending inputs")
-
-    def close(self) -> None:
-        """Release resources without killing the subprocess.
-
-        Call this when the process has exited normally to avoid leaking
-        open file handles in long-running MCP server processes.
-        """
-        self._close_log_handles()
-
-    def __del__(self) -> None:
-        """Best-effort cleanup of leaked file handles."""
-        self._close_log_handles()
 
 
 class TmuxSession:

@@ -43,9 +43,6 @@ from codex_agy_bridge.core import (
     goal_path as goal_path,
 )
 from codex_agy_bridge.core import (
-    latest_provider_health as latest_provider_health,
-)
-from codex_agy_bridge.core import (
     latest_step as latest_step,
 )
 from codex_agy_bridge.core import (
@@ -124,7 +121,6 @@ def create_run(
     model: str | None = DEFAULT_MODEL,
     goal_id: str | None = None,
     target_name: str | None = None,
-    visible_terminal: bool = True,
 ) -> RunState:
     """Start a new asynchronous Antigravity conversation or reuse duplicate.
 
@@ -137,8 +133,6 @@ def create_run(
         model: Name of the LLM model to request.
         goal_id: Optional parent goal ID.
         target_name: Optional target identifier.
-        visible_terminal: True to execute inside visible tmux pane.
-
     Returns:
         The created or reused RunState dict.
     """
@@ -151,7 +145,6 @@ def create_run(
         model=model,
         goal_id=goal_id,
         target_name=target_name,
-        visible_terminal=visible_terminal,
     )
 
 
@@ -254,7 +247,6 @@ def start_goal_target(
     prompt: str,
     timeout_seconds: int = 900,
     dangerously_skip_permissions: bool = True,
-    visible_terminal: bool = True,
 ) -> RunState:
     """Create and launch a run linked to a parent goal target.
 
@@ -264,8 +256,6 @@ def start_goal_target(
         prompt: Run prompt.
         timeout_seconds: Execution timeout limit.
         dangerously_skip_permissions: Skip interactive permission prompts.
-        visible_terminal: Run inside visible Tmux window.
-
     Returns:
         The launched RunState dict.
     """
@@ -275,7 +265,6 @@ def start_goal_target(
         prompt=prompt,
         timeout_seconds=timeout_seconds,
         dangerously_skip_permissions=dangerously_skip_permissions,
-        visible_terminal=visible_terminal,
     )
 
 

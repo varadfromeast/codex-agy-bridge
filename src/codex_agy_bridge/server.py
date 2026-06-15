@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from codex_agy_bridge import orchestration
 from codex_agy_bridge.core import STATE_ROOT, public_state
@@ -21,7 +22,7 @@ mcp = FastMCP(
         "exact conversation_id for follow-up work. For bounded parallel work, "
         "call agy_goal_create once, call agy_goal_target_start once per unique "
         "named target, then poll agy_goal_status for the aggregate result. "
-        "Use agy_cancel to stop an active run. Visible targets support "
+        "Use agy_cancel to stop an active run. Targets support "
         "agy_target_open_terminal and agy_target_send_text. "
         "Antigravity is agentic and the workspace is not a security boundary."
     ),
@@ -38,7 +39,6 @@ def create_run(
     model: str | None = DEFAULT_MODEL,
     goal_id: str | None = None,
     target_name: str | None = None,
-    visible_terminal: bool = True,
 ) -> dict[str, Any]:
     """Compatibility interface for callers predating the orchestration module."""
     return cast(
@@ -52,7 +52,6 @@ def create_run(
             model=model,
             goal_id=goal_id,
             target_name=target_name,
-            visible_terminal=visible_terminal,
         ),
     )
 
@@ -64,7 +63,6 @@ def agy_start(
     timeout_seconds: int = 900,
     dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
-    visible_terminal: bool = True,
 ) -> dict[str, Any]:
     """Start a new asynchronous Antigravity conversation.
 
@@ -82,7 +80,6 @@ def agy_start(
                 conversation_id=None,
                 dangerously_skip_permissions=dangerously_skip_permissions,
                 model=model,
-                visible_terminal=visible_terminal,
             ),
         )
     )
@@ -96,7 +93,6 @@ def agy_continue(
     timeout_seconds: int = 900,
     dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
-    visible_terminal: bool = True,
 ) -> dict[str, Any]:
     """Continue an exact Antigravity conversation asynchronously."""
     return public_state(
@@ -109,7 +105,6 @@ def agy_continue(
                 conversation_id=conversation_id,
                 dangerously_skip_permissions=dangerously_skip_permissions,
                 model=model,
-                visible_terminal=visible_terminal,
             ),
         )
     )
@@ -155,7 +150,7 @@ def agy_cancel(run_id: str) -> dict[str, Any]:
 def agy_goal_create(
     objective: str,
     workspace: str,
-    max_parallel: int = 2,
+    max_parallel: StrictInt = 2,
     model: str = DEFAULT_MODEL,
 ) -> dict[str, Any]:
     """Create a lightweight parent goal for bounded parallel targets."""
@@ -177,9 +172,8 @@ def agy_goal_target_start(
     prompt: str,
     timeout_seconds: int = 900,
     dangerously_skip_permissions: bool = True,
-    visible_terminal: bool = True,
 ) -> dict[str, Any]:
-    """Start one named goal target, optionally in a persistent visible terminal."""
+    """Start one named goal target in a persistent visible terminal."""
     return public_state(
         cast(
             dict[str, Any],
@@ -189,7 +183,6 @@ def agy_goal_target_start(
                 prompt=prompt,
                 timeout_seconds=timeout_seconds,
                 dangerously_skip_permissions=dangerously_skip_permissions,
-                visible_terminal=visible_terminal,
             ),
         )
     )
@@ -213,7 +206,7 @@ def agy_target_send_text(
     text: str,
     enter: bool = True,
 ) -> dict[str, Any]:
-    """Send text to a visible target's persistent tmux session."""
+    """Send text to a target's persistent tmux session."""
     return orchestration.send_text(run_id, text, enter=enter)
 
 

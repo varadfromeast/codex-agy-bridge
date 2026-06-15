@@ -56,7 +56,6 @@ def create_run(orchestrator, workspace, prompt):
         workspace=str(workspace),
         timeout_seconds=30,
         conversation_id=None,
-        visible_terminal=True,
     )
 
 

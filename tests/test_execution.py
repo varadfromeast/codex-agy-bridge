@@ -1,55 +1,9 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from codex_agy_bridge.execution import HeadlessSession, TmuxSession
-
-
-def test_headless_session_lifecycle(tmp_path: Path):
-    # We want to run a simple process that sleeps
-    session = HeadlessSession(run_dir=tmp_path)
-
-    # Python script that sleeps
-    cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
-
-    assert not session.is_alive()
-
-    session.start("run-1", cmd, tmp_path)
-    assert session.is_alive()
-
-    session.kill()
-    assert not session.is_alive()
-
-
-def test_headless_session_logs(tmp_path: Path):
-    session = HeadlessSession(run_dir=tmp_path)
-    cmd = [
-        sys.executable,
-        "-c",
-        "print('stdout message'); import sys; print('stderr message', file=sys.stderr)",
-    ]
-
-    session.start("run-2", cmd, tmp_path)
-    # Wait for completion
-    import time
-
-    for _ in range(50):
-        if not session.is_alive():
-            break
-        time.sleep(0.1)
-
-    assert not session.is_alive()
-
-    stdout_file = tmp_path / "agy.stdout.log"
-    stderr_file = tmp_path / "agy.stderr.log"
-
-    assert stdout_file.exists()
-    assert stderr_file.exists()
-
-    assert "stdout message" in stdout_file.read_text()
-    assert "stderr message" in stderr_file.read_text()
+from codex_agy_bridge.execution import TmuxSession
 
 
 def test_tmux_session_lifecycle(tmp_path: Path):

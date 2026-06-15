@@ -7,9 +7,36 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from codex_agy_bridge import core
+
 
 @pytest.mark.anyio
 async def test_stdio_initialization_and_tool_contract(tmp_path):
+    external_run = tmp_path / "external-run"
+    external_run.mkdir()
+    core.atomic_write_json(
+        external_run / "state.json",
+        {
+            "run_id": str(external_run),
+            "status": "completed",
+            "result": "must not be read",
+        },
+    )
+    external_goal = tmp_path / "external-goal"
+    external_goal.mkdir()
+    core.atomic_write_json(
+        external_goal / "state.json",
+        {
+            "goal_id": str(external_goal),
+            "objective": "must not be read",
+            "workspace": str(tmp_path),
+            "model": "model",
+            "max_parallel": 1,
+            "targets": {},
+            "created_at": "now",
+            "updated_at": "now",
+        },
+    )
     environment = os.environ.copy()
     environment["AGY_BRIDGE_STATE_DIR"] = str(tmp_path / "state")
     parameters = StdioServerParameters(
@@ -24,9 +51,37 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     ):
         initialized = await session.initialize()
         tools = await session.list_tools()
+        boolean_parallelism = await session.call_tool(
+            "agy_goal_create",
+            {
+                "objective": "Reject boolean parallelism",
+                "workspace": str(tmp_path),
+                "max_parallel": True,
+            },
+        )
+        external_run_status = await session.call_tool(
+            "agy_status",
+            {"run_id": str(external_run), "compact": False},
+        )
+        external_goal_status = await session.call_tool(
+            "agy_goal_status",
+            {"goal_id": str(external_goal)},
+        )
+        blank_continuation = await session.call_tool(
+            "agy_continue",
+            {
+                "conversation_id": "   ",
+                "prompt": "must not start",
+                "workspace": str(tmp_path),
+            },
+        )
 
     assert initialized.serverInfo.name == "codex-agy-bridge"
     assert initialized.instructions
+    assert boolean_parallelism.isError
+    assert external_run_status.isError
+    assert external_goal_status.isError
+    assert blank_continuation.isError
     assert "run_id" in initialized.instructions
     assert "agy_goal_create" in initialized.instructions
     assert "agy_goal_target_start" in initialized.instructions
@@ -47,13 +102,13 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     start = next(tool for tool in tools.tools if tool.name == "agy_start")
     assert start.outputSchema is not None
     assert start.outputSchema["type"] == "object"
-    assert start.inputSchema["properties"]["visible_terminal"]["default"] is True
+    assert "visible_terminal" not in start.inputSchema["properties"]
     assert (
         start.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
         is True
     )
     continuation = next(tool for tool in tools.tools if tool.name == "agy_continue")
-    assert continuation.inputSchema["properties"]["visible_terminal"]["default"] is True
+    assert "visible_terminal" not in continuation.inputSchema["properties"]
     assert (
         continuation.inputSchema["properties"]["dangerously_skip_permissions"][
             "default"
@@ -61,7 +116,7 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
         is True
     )
     target = next(tool for tool in tools.tools if tool.name == "agy_goal_target_start")
-    assert target.inputSchema["properties"]["visible_terminal"]["default"] is True
+    assert "visible_terminal" not in target.inputSchema["properties"]
     assert (
         target.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
         is True

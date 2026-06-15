@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from codex_agy_bridge.orchestration import ProcessManager, RunnerOrchestrator
 
 
@@ -59,10 +61,10 @@ def test_orchestrator_create_run_spawns_process(tmp_path, monkeypatch):
         workspace=str(workspace),
         timeout_seconds=900,
         conversation_id=None,
-        visible_terminal=False,  # Headless to trigger subprocess spawn
     )
 
     assert run_state["status"] == "queued"
+    assert run_state["tmux_session"]
     assert run_state["runner_pid"] == 9999
     assert len(pm.spawned) == 1
     assert pm.spawned[0]["cwd"] == str(workspace)
@@ -71,6 +73,23 @@ def test_orchestrator_create_run_spawns_process(tmp_path, monkeypatch):
         or "python" in pm.spawned[0]["args"][0]
         or "runner" in pm.spawned[0]["args"]
     )
+
+
+def test_orchestrator_rejects_blank_conversation_id_before_spawn(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    pm = MockProcessManager()
+    orch = RunnerOrchestrator(state_root=tmp_path / "state", process_manager=pm)
+
+    with pytest.raises(ValueError, match="conversation_id"):
+        orch.create_run(
+            prompt="Continue",
+            workspace=str(workspace),
+            timeout_seconds=900,
+            conversation_id="   ",
+        )
+
+    assert pm.spawned == []
 
 def test_active_run_registry_lifecycle(tmp_path, monkeypatch):
     from codex_agy_bridge import core
@@ -88,7 +107,6 @@ def test_active_run_registry_lifecycle(tmp_path, monkeypatch):
         workspace=str(workspace),
         timeout_seconds=900,
         conversation_id=None,
-        visible_terminal=False,
     )
     run_id = run_state["run_id"]
 

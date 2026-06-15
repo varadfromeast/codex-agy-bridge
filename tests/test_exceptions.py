@@ -4,7 +4,6 @@ import pytest
 
 from codex_agy_bridge import core
 from codex_agy_bridge.exceptions import (
-    AntigravityAuthRequired,
     BridgeError,
     ConcurrencyLimitExceeded,
     RunNotFoundError,
@@ -20,8 +19,6 @@ def test_custom_exceptions_inheritance():
     assert issubclass(WorkspaceAccessError, ValueError)
     assert issubclass(ConcurrencyLimitExceeded, BridgeError)
     assert issubclass(ConcurrencyLimitExceeded, RuntimeError)
-    assert issubclass(AntigravityAuthRequired, BridgeError)
-    assert issubclass(AntigravityAuthRequired, ValueError)
 
 def test_load_state_raises_run_not_found():
     with pytest.raises(RunNotFoundError):
@@ -64,26 +61,4 @@ def test_create_run_raises_concurrency_limit_exceeded(monkeypatch, tmp_path):
             workspace=str(workspace),
             timeout_seconds=900,
             conversation_id=None,
-        )
-
-def test_create_run_raises_antigravity_auth_required(monkeypatch, tmp_path):
-    from codex_agy_bridge import orchestration
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    # Isolate STATE_ROOT
-    state_root = tmp_path / "state"
-    monkeypatch.setattr(core, "STATE_ROOT", state_root)
-    monkeypatch.setattr(orchestration, "STATE_ROOT", state_root)
-    monkeypatch.setattr(
-        orchestration,
-        "latest_provider_health",
-        lambda _root: {"status": "auth_interaction_required"},
-    )
-    with pytest.raises(AntigravityAuthRequired):
-        orchestration.create_run(
-            prompt="Hello",
-            workspace=str(workspace),
-            timeout_seconds=900,
-            conversation_id=None,
-            visible_terminal=False,
         )

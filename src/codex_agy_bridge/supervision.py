@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 from datetime import UTC, datetime
 
 from codex_agy_bridge import runner as runtime
 from codex_agy_bridge import terminal
 from codex_agy_bridge.state import RunState
+from codex_agy_bridge.transcript import TranscriptHarvester
 
 
 class RunSupervisor:
@@ -21,13 +21,22 @@ class RunSupervisor:
         self.directory = runtime.run_dir(run_id)
         self.progress_path = self.directory / "terminal-progress.log"
         self.cancel_path = self.directory / "cancel"
-        self.process: subprocess.Popen[bytes] | None = None
         self.session: str | None = None
         self.launched_at = 0.0
         self.conversation_id = self.state.get("requested_conversation_id")
+        self.harvester = (
+            TranscriptHarvester(
+                str(self.conversation_id),
+                runtime.transcript_path(str(self.conversation_id)),
+            )
+            if self.conversation_id
+            else None
+        )
         self.marker_response: str | None = None
         self.marker_seen_at: float | None = None
         self.last_terminal_step = -1
+        self.next_conversation_probe_at = 0.0
+        self.conversation_probe_delay = 1.0
 
     def execute(self) -> int:
         """Run the complete lifecycle behind one small interface."""
@@ -51,28 +60,20 @@ class RunSupervisor:
             "Starting Antigravity. Waiting for transcript events...\n",
             encoding="utf-8",
         )
-        with (
-            (self.directory / "agy.stdout.log").open("ab") as stdout,
-            (self.directory / "agy.stderr.log").open("ab") as stderr,
-        ):
-            self.process = runtime.launch_process(
-                self.state,
-                command,
-                workspace=str(self.state["workspace"]),
-                stdout=stdout,
-                stderr=stderr,
-                progress_log=self.progress_path,
-            )
+        runtime.launch_process(
+            self.state,
+            command,
+            workspace=str(self.state["workspace"]),
+        )
         self.session = (
             str(self.state["tmux_session"]) if self.state.get("tmux_session") else None
         )
-        if self.session and self.state.get("visible_terminal"):
+        if self.session:
             terminal.attach(self.session)
         runtime.update_state(
             self.run_id,
             status="running",
             runner_pid=os.getpid(),
-            agy_pid=self.process.pid if self.process else None,
             command=command[:-1] + ["<prompt>"],
             launched_at=self.launched_at,
             started_at=self.state.get("started_at") or self.state.get("created_at"),
@@ -80,7 +81,7 @@ class RunSupervisor:
 
     def _monitor_until_exit(self) -> int | None:
         deadline = time.monotonic() + int(self.state["timeout_seconds"]) + 30
-        while runtime.run_active(self.process, self.session):
+        while runtime.run_active(self.session):
             if self.cancel_path.exists():
                 self._stop()
                 self._finish(status="canceled")
@@ -103,28 +104,41 @@ class RunSupervisor:
             time.sleep(0.5)
         return None
 
-    def _observe_conversation(self) -> None:
+    def _observe_conversation(self, *, force: bool = False) -> None:
         if not self.conversation_id:
+            now = time.monotonic()
+            if not force and now < self.next_conversation_probe_at:
+                return
             self.conversation_id = runtime.conversation_for_prompt_after(
                 str(self.state["prompt"]),
                 started_after=self.launched_at,
             )
             if self.conversation_id:
+                self.harvester = TranscriptHarvester(
+                    str(self.conversation_id),
+                    runtime.transcript_path(str(self.conversation_id)),
+                )
+                self.conversation_probe_delay = 1.0
                 runtime.update_state(
                     self.run_id,
                     conversation_id=self.conversation_id,
                 )
-        if self.conversation_id and self.session:
-            self.last_terminal_step = runtime.append_terminal_progress(
-                str(self.conversation_id),
-                after_step=self.last_terminal_step,
-                progress_log=self.progress_path,
-            )
+            else:
+                self.next_conversation_probe_at = now + self.conversation_probe_delay
+                self.conversation_probe_delay = min(
+                    self.conversation_probe_delay * 2,
+                    8.0,
+                )
+        if self.harvester:
+            records = self.harvester.poll()
+            if records and self.session:
+                self.last_terminal_step = runtime.append_terminal_progress(
+                    records,
+                    progress_log=self.progress_path,
+                )
 
     def _response(self) -> str | None:
-        if not self.conversation_id:
-            return None
-        return runtime.final_response(str(self.conversation_id))
+        return self.harvester.latest_response if self.harvester else None
 
     def _completion_is_stable(self, response: str | None) -> bool:
         marker = str(self.state["completion_marker"])
@@ -143,20 +157,17 @@ class RunSupervisor:
         )
 
     def _finish_after_exit(self) -> int:
-        self._observe_conversation()
+        self._observe_conversation(force=True)
         response = runtime.clean_response(
             self._response(),
             str(self.state["completion_marker"]),
         )
-        return_code = self.process.returncode if self.process else 0
         if self.cancel_path.exists():
             status, error = "canceled", None
-        elif return_code == 0 and response:
+        elif response:
             status, error = "completed", None
-        elif return_code == 0:
-            status, error = self._classify_empty_response()
         else:
-            status, error = "failed", f"agy exited with status {return_code}"
+            status, error = self._classify_empty_response()
         self._finish(status=status, result=response, error=error)
         return 0 if status == "completed" else 1
 
@@ -175,7 +186,7 @@ class RunSupervisor:
         return "failed", "agy exited without a completed response"
 
     def _stop(self) -> None:
-        runtime.stop_run(self.process, self.session)
+        runtime.stop_run(self.session)
 
     def _finish(
         self,
@@ -188,7 +199,7 @@ class RunSupervisor:
             self.run_id,
             status=status,
             conversation_id=self.conversation_id,
-            return_code=self.process.returncode if self.process else 0,
+            return_code=0,
             result=result,
             error=error,
             finished_at=datetime.now(UTC).isoformat(),

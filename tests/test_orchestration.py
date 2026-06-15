@@ -30,7 +30,6 @@ def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
         "model": orchestration.DEFAULT_MODEL,
         "goal_id": None,
         "target_name": None,
-        "visible_terminal": True,
         "request_key": orchestration._request_key(
             prompt="Review the pull request",
             workspace=str(workspace),
@@ -40,7 +39,6 @@ def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
             model=orchestration.DEFAULT_MODEL,
             goal_id=None,
             target_name=None,
-            visible_terminal=True,
         ),
     }
     spawned = []
@@ -58,14 +56,13 @@ def test_identical_active_start_reuses_existing_run(monkeypatch, tmp_path):
         workspace=str(workspace),
         timeout_seconds=900,
         conversation_id=None,
-        visible_terminal=True,
     )
 
     assert state == existing
     assert spawned == []
 
 
-def test_send_text_uses_visible_run_tmux_session(monkeypatch, tmp_path):
+def test_send_text_uses_run_tmux_session(monkeypatch, tmp_path):
     sent = []
     state_root = isolate_state_root(monkeypatch, tmp_path)
 
@@ -91,30 +88,28 @@ def test_send_text_uses_visible_run_tmux_session(monkeypatch, tmp_path):
     assert result["sent"] is True
 
 
-def test_headless_start_fails_fast_when_auth_needs_interaction(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    isolate_state_root(monkeypatch, tmp_path)
+def test_open_terminal_rejects_stopped_tmux_session(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "canceled",
+        "tmux_session": "agy-target",
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: False)
     monkeypatch.setattr(
-        orchestration,
-        "latest_provider_health",
-        lambda _state_root: {
-            "status": "auth_interaction_required",
-            "action": "send yes",
-        },
+        orchestration.terminal,
+        "attach",
+        lambda _session, *, check: pytest.fail("attach must not be called"),
     )
 
-    with pytest.raises(ValueError, match="auth preflight failed"):
-        orchestration.create_run(
-            prompt="Review pull request",
-            workspace=str(workspace),
-            timeout_seconds=900,
-            conversation_id=None,
-            visible_terminal=False,
-        )
+    with pytest.raises(ValueError, match="not running"):
+        orchestration.open_terminal("run-1")
 
 
-def test_visible_start_allows_auth_interaction_recovery(monkeypatch, tmp_path):
+def test_start_always_creates_tmux_session(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     spawned = []
@@ -148,23 +143,25 @@ def test_visible_start_allows_auth_interaction_recovery(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(orchestration, "_orchestrator", orch)
 
-    monkeypatch.setattr(
-        orchestration,
-        "latest_provider_health",
-        lambda _state_root: {"status": "auth_interaction_required"},
-    )
     monkeypatch.setattr(orchestration, "conversation_for_workspace", lambda _root: None)
+    monkeypatch.setattr(
+        core,
+        "run_provider_health",
+        lambda _directory: pytest.fail(
+            "provider diagnostics must not run before launch"
+        ),
+    )
 
     state = orchestration.create_run(
         prompt="Review pull request",
         workspace=str(workspace),
         timeout_seconds=900,
         conversation_id=None,
-        visible_terminal=True,
     )
 
     assert spawned == [True]
     assert state["runner_pid"] == 4321
+    assert state["tmux_session"]
 
 
 class ConcurrentProcessManager(ProcessManager):
@@ -211,7 +208,6 @@ def test_concurrent_identical_starts_reserve_queued_run(monkeypatch, tmp_path):
                 workspace=str(workspace),
                 timeout_seconds=30,
                 conversation_id=None,
-                visible_terminal=True,
             )
         )
 
@@ -266,7 +262,6 @@ def test_concurrent_goal_targets_preserve_both_registrations(tmp_path):
                 goal_id=goal["goal_id"],
                 target_name=target_name,
                 prompt=target_name,
-                visible_terminal=True,
             )
         )
 
