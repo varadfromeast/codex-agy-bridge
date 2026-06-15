@@ -512,7 +512,7 @@ def test_concurrent_goal_targets_preserve_both_registrations(tmp_path):
     assert {result["target_name"] for result in results} == {"alpha", "beta"}
 
 
-def test_goal_target_inherits_execution_policy(tmp_path):
+def test_goal_target_inherits_execution_policy(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     extra = tmp_path / "extra"
@@ -522,6 +522,18 @@ def test_goal_target_inherits_execution_policy(tmp_path):
     orchestrator = RunnerOrchestrator(
         state_root=tmp_path / "state",
         process_manager=process_manager,
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.AntigravityCli.capabilities",
+        lambda _self: type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )(),
     )
     goal = orchestrator.create_goal(
         objective="policy inheritance",

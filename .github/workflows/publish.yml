@@ -91,7 +91,7 @@ jobs:
       - name: Wait for the PyPI release
         run: |
           version="${GITHUB_REF_NAME#v}"
-          for attempt in {1..30}; do
+          for _ in {1..30}; do
             if curl --fail --silent \
               "https://pypi.org/pypi/codex-agy-bridge/${version}/json" \
               >/dev/null; then
