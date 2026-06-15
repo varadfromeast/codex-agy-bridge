@@ -1,154 +1,167 @@
-# Product Architecture
+# Architecture: Need to Know
 
-## Process Topology
+This is the minimum mental model needed to change `codex-agy-bridge` safely.
+The bridge is a local control plane: MCP calls return quickly, while durable
+worker processes and tmux sessions own long-running Antigravity work.
 
-The bridge is a local, process-isolated control plane around the Antigravity
-CLI. MCP requests remain short-lived while delegated agent work survives in a
-detached Python worker and a persistent tmux session.
+## The 5 Things You Need to Know
+
+### 1. Runtime Topology
 
 ```mermaid
 flowchart LR
-    subgraph Client["Codex client process"]
-        Codex["Codex agent"]
-    end
+    C["Codex / MCP client"]
+    S["MCP server process<br/>server.py"]
+    O["RunnerOrchestrator<br/>_orchestrator.py"]
+    W["Detached worker per Run<br/>runner.py + supervision.py"]
+    T["Persistent tmux session<br/>execution.py + terminal.py"]
+    A["Antigravity CLI"]
+    D[("Bridge state<br/>Run/Goal JSON, locks,<br/>active registry, input queue")]
+    X[("Antigravity data<br/>transcript JSONL,<br/>conversation map")]
 
-    subgraph MCP["Bridge MCP server process"]
-        Server["server.py<br/>FastMCP tools"]
-        Facade["orchestration.py<br/>compatibility facade"]
-        Orchestrator["RunnerOrchestrator<br/>capacity, reservation, control"]
-        Request["RunRequest<br/>validation, normalization,<br/>dedup identity, initial state"]
-        CLI["AntigravityCli<br/>capabilities, models,<br/>command construction"]
-        Diagnostics["diagnostics.py<br/>bounded read-only probes"]
-    end
-
-    subgraph Storage["Durable local storage"]
-        RunStore["DiskRunStore<br/>JSON state + FileLock"]
-        RunFiles["runs/&lt;run-id&gt;/<br/>state, logs, exit code"]
-        GoalFiles["goals/&lt;goal-id&gt;/state.json"]
-        Active["active/&lt;run-id&gt;<br/>capacity registry"]
-    end
-
-    subgraph Worker["Detached runner process per Run"]
-        Runner["python -m codex_agy_bridge.runner"]
-        Supervisor["RunSupervisor<br/>lifecycle authority"]
-        Harvester["TranscriptHarvester<br/>incremental JSONL reader"]
-    end
-
-    subgraph Terminal["Persistent execution session"]
-        Tmux["tmux server + session"]
-        Shell["session shell<br/>records child exit code"]
-        Agy["agy CLI<br/>print or prompt-interactive"]
-        TerminalApp["Terminal.app<br/>optional attachment"]
-    end
-
-    subgraph Antigravity["Antigravity local data"]
-        Brain["brain/&lt;conversation-id&gt;/<br/>transcript.jsonl"]
-        ConversationMap["cache/last_conversations.json"]
-    end
-
-    Codex <-->|"MCP over stdio"| Server
-    Server --> Facade --> Orchestrator
-    Server --> Diagnostics --> CLI
-    Orchestrator --> Request --> CLI
-    Orchestrator <-->|"RunStore interface"| RunStore
-    RunStore --> RunFiles
-    RunStore --> GoalFiles
-    RunStore --> Active
-    Orchestrator -->|"detached Popen"| Runner
-    Runner --> Supervisor -->|"start/kill/is_alive"| Tmux
-    Tmux --> Shell --> Agy
-    TerminalApp -.->|"tmux attach via AppleScript"| Tmux
-    Agy --> Brain
-    Agy --> ConversationMap
-    Supervisor --> Harvester --> Brain
-    Supervisor --> RunFiles
+    C <-->|"MCP over stdio"| S
+    S --> O
+    O <-->|"atomic reads/writes"| D
+    O -->|"detached Popen"| W
+    W <-->|"authoritative Run state"| D
+    W -->|"start, poll, kill, input"| T
+    T --> A
+    A --> X
+    W -->|"incremental harvest"| X
 ```
 
-## Run Creation And Execution
+The MCP server does not wait for delegated work. Each Run gets a detached
+Python supervisor and a tmux session that outlive MCP connections and
+Terminal.app. Persisted Run state is authoritative; transcripts are history.
+
+### 2. Architectural Seams
+
+| Seam | Interface | Production adapter | Test adapter |
+| --- | --- | --- | --- |
+| State storage | `RunStore` | `DiskRunStore` | `MemoryRunStore` |
+| Execution session | `ExecutionSession` | `TmuxSession` | `MockSession` |
+| Worker processes | `ProcessManager` | `LocalProcessManager` | Injected fake managers |
+| CLI validation | `CliValidator` | `AntigravityCli` | `FakeCli` |
+
+CLI compatibility belongs in `cli.py`, persistence in `store.py`, and tmux
+behavior in `execution.py` and `terminal.py`.
+
+### 3. Primary Call Chains
+
+#### Start a Run
+
+```text
+MCP client
+  -> server.py: agy_start() / agy_interactive_start()
+  -> orchestration.py: create_run()                  facade
+  -> _orchestrator.py: RunnerOrchestrator.create_run()
+  -> run_request.py: RunRequest.prepare()
+       validate input and CLI capabilities
+       normalize paths and policy
+       compute canonical request_key
+  -> RunStore.list_active_runs()                     dedup/capacity
+  -> RunStore.save_run()                             persist queued Run
+  -> ProcessManager.spawn()                          detached runner
+
+[detached process]
+  -> runner.py: main()
+  -> supervision.py: RunSupervisor.execute()
+  -> execution.py: TmuxSession.start()
+  -> terminal.py: launch()
+  -> Antigravity CLI
+  -> TranscriptHarvester.poll()
+  -> RunStore.update_run()                           terminal state
+```
+
+The start lock covers deduplication, capacity, and persistence. Process spawn
+happens after releasing the lock so slow OS work does not serialize starts.
+
+#### Send Interactive Input
 
 ```mermaid
 sequenceDiagram
-    participant C as Codex
-    participant S as FastMCP server
+    participant C as MCP client
     participant O as RunnerOrchestrator
-    participant R as RunRequest
-    participant ST as RunStore
-    participant W as Detached runner
-    participant T as tmux session
-    participant A as agy CLI
-    participant B as Antigravity transcript
+    participant Q as Durable input queue
+    participant S as RunSupervisor
+    participant T as tmux
+    participant A as Antigravity
 
-    C->>S: agy_start / agy_interactive_start
-    S->>O: create_run(...)
-    O->>R: prepare request
-    R->>R: validate + normalize + compute request_key
-    O->>ST: lock start registry
-    O->>ST: check duplicate and capacity
-    O->>R: initial_state(run_id, marker, session)
-    O->>ST: persist queued Run
-    O->>W: detached Popen(run_id)
-    S-->>C: durable run_id
-
-    W->>ST: load persisted Run
-    W->>T: start persistent session
-    T->>A: launch print or interactive command
-    A->>B: append trajectory events
-    W->>B: incrementally harvest events
-    W->>ST: persist running/completed/failed/canceled
-
-    C->>S: agy_status / agy_transcript / agy_result
-    S->>ST: read durable state
-    S->>B: read bounded transcript view
-    S-->>C: compact observable result
+    C->>O: agy_target_send_text(prompt)
+    O->>Q: append submitted prompt
+    O-->>C: accepted immediately
+    S->>Q: peek oldest prompt
+    S->>T: deliver one prompt
+    T->>A: literal text, M-Enter per newline, Enter to submit
+    A-->>S: completed planner response
+    S->>Q: remove delivered prompt and release next
 ```
 
-## The Important Modules
+Non-empty `enter=true` input is queued in `interactive-input.json` and released
+one prompt per completed response. `enter=false` and empty Enter remain direct
+terminal keystrokes.
 
-| Module | Interface responsibility | Why it matters |
-| --- | --- | --- |
-| `server.py` | Stable MCP tool contract | Keeps Codex-facing schemas small and transport-specific behavior out of the product logic. |
-| `run_request.py` | Prepare one immutable Run Request | Concentrates validation, execution-policy checks, deduplication identity, and initial persisted-state construction. |
-| `_orchestrator.py` | Reserve and control durable Runs and Goals | Owns capacity, deduplication reservation, persistence coordination, cancellation, and detached process startup. |
-| `store.py` | Persist and atomically update Run and Goal state | Disk and memory adapters make the same lifecycle interface available to production and tests. |
-| `runner.py` | Detached worker entrypoint | Separates long-lived delegated work from MCP tool timeouts and server restarts. |
-| `supervision.py` | Authoritative lifecycle for one Run | Observes completion, timeout, cancellation, conversation discovery, and actual child exit status. |
-| `execution.py` / `terminal.py` | Execution Session interface and tmux adapter | Keeps process persistence, input delivery, and Terminal.app attachment behind one seam. |
-| `cli.py` | Antigravity CLI compatibility | Localizes changing CLI commands, capability probing, model discovery, and bounded subprocess output. |
-| `core.py` / `transcript.py` | Antigravity data compatibility and observation | Isolates assumptions about trajectory files and returns bounded, sanitized progress. |
+This queue is experimental and transcript-gated. It depends on private
+Antigravity response event semantics and can stall if those events change.
+Compact Run status reports queued prompt count and whether one prompt is
+waiting for a response. Text injection is rejected for print-mode Runs.
 
-## Lifecycle Authority
+Goals are bridge-owned MCP scheduling records. They coordinate independent
+Antigravity Runs; they are not an Antigravity primitive and do not provide
+shared native conversation context.
 
-```mermaid
-stateDiagram-v2
-    [*] --> queued: Run reserved and persisted
-    queued --> running: detached runner launches tmux
-    running --> completed: stable print marker or response after clean exit
-    running --> failed: timeout, nonzero exit, provider failure, lost runner
-    running --> cancel_requested: agy_cancel
-    cancel_requested --> canceled: session stopped and state finalized
-    running --> running: interactive response completes but session remains live
-    completed --> [*]
-    failed --> [*]
-    canceled --> [*]
+### 4. Files That Matter
+
+| File | Approx. lines | Read it when |
+| --- | ---: | --- |
+| [`_orchestrator.py`](../src/codex_agy_bridge/_orchestrator.py) | 820 | Changing reservation, capacity, deduplication, Goals, cancellation, status, or input routing |
+| [`supervision.py`](../src/codex_agy_bridge/supervision.py) | 254 | Changing Run completion, cancellation, timeout, transcript observation, or queue draining |
+| [`server.py`](../src/codex_agy_bridge/server.py) | 323 | Changing MCP schemas or tool contracts |
+| [`run_request.py`](../src/codex_agy_bridge/run_request.py) | 222 | Changing validation, normalization, execution policy, or request identity |
+| [`store.py`](../src/codex_agy_bridge/store.py) | 264 | Changing atomic Run/Goal persistence |
+| [`cli.py`](../src/codex_agy_bridge/cli.py) | 196 | Adapting to Antigravity CLI changes |
+| [`terminal.py`](../src/codex_agy_bridge/terminal.py) | 130 | Changing tmux launch, attachment, or literal/multiline input |
+| [`interactive_input.py`](../src/codex_agy_bridge/interactive_input.py) | 48 | Changing durable interactive queue semantics |
+
+Glue files: `orchestration.py` is the facade; `runner.py` is the worker
+entrypoint; `execution.py` provides session adapters; `core.py` provides paths
+and transcript compatibility; `diagnostics.py` contains bounded probes; and
+`state.py` defines persisted shapes.
+
+### 5. What Changed Recently
+
+```diff
+ Run creation
+- validation and request identity spread across orchestration code
++ RunRequest owns validation, normalization, and canonical identity
+
+ Interactive lifetime
+- interactive Runs inherited print-mode hard timeouts
++ interactive Runs stay alive until canceled or the session exits
+
+ Interactive input
+- MCP calls wrote directly to tmux while Antigravity could still be busy
++ submitted prompts enter a durable per-Run FIFO queue
++ supervisor releases one prompt after each completed response
+
+ Multiline input
+- embedded newlines could submit partial prompts or become spaces
++ terminal sends literal line segments with M-Enter, then Enter once
+
+ MCP and diagnostics
+- extra fields could be silently ignored; CLI probe failures could cascade
++ tool arguments reject extras; probes are bounded and failure-isolated
 ```
 
-The persisted Run state is authoritative. Transcript events are historical
-producer output and may still show a running tool call after cancellation.
+## Safety Invariants
 
-## Stability And Extensibility
-
-- **MCP timeout isolation:** the MCP server only reserves work and returns a
-  `run_id`; detached runner processes own long execution.
-- **Server restart survival:** Run and Goal state, logs, active sentinels, and
-  tmux sessions are durable outside the MCP process.
-- **Concurrency correctness:** a global start lock makes deduplication and
-  capacity reservation atomic before spawning.
-- **Terminal persistence:** tmux keeps the CLI alive independently of
-  Terminal.app and records the actual child exit code.
-- **Compatibility locality:** CLI changes belong in `AntigravityCli`;
-  trajectory-format changes belong in `core.py` and `TranscriptHarvester`.
-- **Testable seams:** `RunStore`, `ProcessManager`, and `ExecutionSession` have
-  production and in-memory adapters. The Run Request interface is directly
-  testable without spawning processes.
-- **Explicit context:** exact conversation IDs continue native context; Goals
-  coordinate Runs but do not implicitly merge conversation context.
+- Validate before capacity checks, state creation, or process spawn.
+- Hold the start lock only for deduplication, capacity, and reservation.
+- Never derive terminal Run status solely from late transcript output.
+- Persist state before spawning; persisted state must survive MCP reconnects.
+- Keep public transcript content bounded and omit private completion markers.
+- Reject dead-session input rather than queueing work that cannot be consumed.
+- Treat `sandbox` and additional directories as CLI policy hints, never as
+  filesystem containment.
+- Run GitNexus impact analysis before editing symbols and `detect_changes()`
+  before committing.

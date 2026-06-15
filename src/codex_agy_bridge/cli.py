@@ -117,6 +117,12 @@ class AntigravityCli:
         *,
         run_directory: str | Path,
     ) -> list[str]:
+        """Build the exact CLI invocation.
+
+        sandbox and additional_directories are forwarded as Antigravity CLI
+        policy hints. This adapter does not treat them as filesystem
+        containment or a security boundary.
+        """
         sandbox = bool(state.get("sandbox", False))
         directories = list(state.get("additional_directories") or [])
         mode = str(state.get("execution_mode") or "print")

@@ -134,6 +134,10 @@ def create_run(
         conversation_id: Thread conversation identifier or None.
         dangerously_skip_permissions: Skip user-interaction prompts.
         model: Name of the LLM model to request.
+        sandbox: Forward the Antigravity CLI sandbox policy hint; not
+            filesystem containment.
+        additional_directories: Forward validated CLI directory hints; not
+            filesystem boundaries.
         goal_id: Optional parent goal ID.
         target_name: Optional target identifier.
     Returns:
@@ -230,13 +234,15 @@ def create_goal(
     additional_directories: list[str] | None = None,
     dangerously_skip_permissions: bool = True,
 ) -> GoalState:
-    """Create a new parent goal.
+    """Create a bridge-owned MCP scheduler container.
 
     Args:
         objective: Description of the goal's overall target.
         workspace: The directory where execution takes place.
         max_parallel: Limit on simultaneous runs.
         model: Target LLM model name.
+        sandbox: CLI policy hint inherited by targets; not containment.
+        additional_directories: CLI directory hints inherited by targets.
 
     Returns:
         The GoalState dict.
@@ -262,7 +268,7 @@ def start_goal_target(
     sandbox: bool | None = None,
     additional_directories: list[str] | None = None,
 ) -> RunState:
-    """Create and launch a run linked to a parent goal target.
+    """Create an independent Run linked to an MCP scheduler target.
 
     Args:
         goal_id: ID of the parent goal.
@@ -270,6 +276,8 @@ def start_goal_target(
         prompt: Run prompt.
         timeout_seconds: Execution timeout limit.
         dangerously_skip_permissions: Skip interactive permission prompts.
+        sandbox: CLI policy hint for this target; not containment.
+        additional_directories: CLI directory hints for this target.
     Returns:
         The launched RunState dict.
     """

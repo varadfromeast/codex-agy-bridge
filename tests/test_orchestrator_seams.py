@@ -51,6 +51,7 @@ def test_orchestrator_uses_injected_execution_session(tmp_path: Path):
         "workspace": str(tmp_path),
         "prompt": "hello",
         "tmux_session": "agy-test-session",
+        "execution_mode": "interactive",
     }
     store.save_run("run-mock-123", run_state)
 
@@ -68,10 +69,10 @@ def test_orchestrator_uses_injected_execution_session(tmp_path: Path):
         session_factory=session_factory,
     )
 
-    # Send text should send input to the session
+    # Unsubmitted interactive text should use the injected session.
     mock_session._alive = True
-    orch.send_text("run-mock-123", "hello input")
-    mock_session.send_input.assert_called_with("hello input", enter=True)
+    orch.send_text("run-mock-123", "hello input", enter=False)
+    mock_session.send_input.assert_called_with("hello input", enter=False)
 
     # Cancel should kill the session
     orch.cancel("run-mock-123")

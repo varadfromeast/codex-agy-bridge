@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import shlex
+import subprocess
+
+import pytest
+
 from codex_agy_bridge import terminal
 
 
@@ -66,6 +71,57 @@ def test_terminal_launch_passes_bridge_environment_to_tmux_session(
     assert command[7:9] == ["-e", "AGY_CMD=/tmp/fake-agy"]
     assert "AGY_BRIDGE_STATE_DIR=/tmp/bridge-state" in command
     assert "AGY_BRIDGE_AGY_ROOT=/tmp/agy-root" in command
+
+
+def test_terminal_launch_rolls_back_session_when_pipe_setup_fails(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[1] == "pipe-pane":
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(terminal.subprocess, "run", run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        terminal.launch(
+            "agy-target",
+            ["/usr/local/bin/agy", "--print", "work"],
+            workspace=str(tmp_path),
+            terminal_log=tmp_path / "terminal.log",
+            progress_log=tmp_path / "terminal-progress.log",
+            stdout_log=tmp_path / "agy.stdout.log",
+            stderr_log=tmp_path / "agy.stderr.log",
+        )
+
+    assert calls[-1] == (
+        ["tmux", "kill-session", "-t", "agy-target"],
+        {"check": False},
+    )
+
+
+def test_terminal_launch_quotes_pipe_log_path(monkeypatch, tmp_path):
+    calls = []
+    log_path = tmp_path / "path with spaces" / "terminal.log"
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    terminal.launch(
+        "agy-target",
+        ["/usr/local/bin/agy", "--print", "work"],
+        workspace=str(tmp_path),
+        terminal_log=log_path,
+        progress_log=tmp_path / "terminal-progress.log",
+        stdout_log=tmp_path / "agy.stdout.log",
+        stderr_log=tmp_path / "agy.stderr.log",
+    )
+
+    assert calls[1][0][-1] == f"cat >> {shlex.quote(str(log_path))}"
 
 
 def test_terminal_attach_opens_terminal_app(monkeypatch):

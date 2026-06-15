@@ -40,9 +40,11 @@ when the CLI changes.
 - Deduplicates identical active start requests.
 - Keeps separate client-owned MCP server processes from terminating each other.
 - Detects authentication, rate-limit, quota, and response-timeout conditions.
-- Supports CLI sandbox mode and up to 16 explicit additional directories.
+- Forwards CLI `--sandbox` and up to 16 `--add-dir` policy hints without
+  claiming filesystem containment.
 - Discovers models, plugins, capabilities, changelog, and bridge diagnostics.
-- Starts persistent `--prompt-interactive` sessions for conversational input.
+- Starts experimental persistent `--prompt-interactive` sessions for
+  occasional conversational input.
 
 ## Install
 
@@ -154,7 +156,7 @@ Useful environment variables:
 | Tool | Purpose |
 | --- | --- |
 | `agy_start` | Start a new asynchronous conversation and return a `run_id` |
-| `agy_interactive_start` | Start a persistent interactive session |
+| `agy_interactive_start` | Start an experimental transcript-gated interactive session |
 | `agy_continue` | Continue an exact `conversation_id` |
 | `agy_status` | Read compact status or diagnostic paths |
 | `agy_transcript` | Read bounded progress events |
@@ -165,11 +167,11 @@ Useful environment variables:
 | `agy_plugins` | List imported plugins without mutating configuration |
 | `agy_plugin_validate` | Validate a plugin directory contained by a workspace |
 | `agy_changelog` | Read the installed CLI changelog |
-| `agy_goal_create` | Create a bounded parallel-work container |
-| `agy_goal_target_start` | Start one named target in a goal |
-| `agy_goal_status` | Aggregate goal and target status |
+| `agy_goal_create` | Create a bridge-owned MCP scheduling container |
+| `agy_goal_target_start` | Start one independent scheduler target |
+| `agy_goal_status` | Aggregate bridge scheduler target status |
 | `agy_target_open_terminal` | Reattach Terminal.app to an existing run |
-| `agy_target_send_text` | Send interactive prompts or print-mode terminal keys |
+| `agy_target_send_text` | Queue or send input to an interactive Run only |
 
 Typical call flow:
 
@@ -298,17 +300,27 @@ Run state survives MCP server restarts under:
 `agy_transcript` returns bounded events by default; full event content is
 opt-in and length-capped. Private model reasoning fields are never exposed.
 
-## Safety
+## Execution Risk
 
 Antigravity is an agentic CLI. It can read and write files, execute commands,
 and access the network with the current user's privileges. This bridge is not a
 sandbox or security boundary.
 
 `dangerously_skip_permissions` defaults to `true` for print-mode tools. Set it
-to `false` when unattended execution is not appropriate. `sandbox=true` enables
-the CLI's terminal restrictions independently of permission auto-approval.
-`additional_directories` adds only explicitly validated existing directories.
-A workspace scopes conversation context; it is not itself a security boundary.
+to `false` when unattended execution is not appropriate. `sandbox=true` and
+`additional_directories` are CLI policy hints forwarded as `--sandbox` and
+`--add-dir`; live testing with Antigravity CLI 1.0.8 showed that they do not
+enforce filesystem containment. A workspace scopes conversation context only.
+
+Interactive Runs are experimental and should be used sparingly. The bridge
+queues submitted prompts and releases one after observing a completed planner
+response in Antigravity's transcript. If those private transcript event
+semantics change, delivery may stall. `agy_status` exposes the queue depth and
+delivery state.
+
+Goals are an MCP scheduler implemented by this bridge. They are not an
+Antigravity feature, and separate targets do not share native conversation
+context.
 
 The bridge does not read or copy Antigravity OAuth credentials. It invokes the
 installed `agy` binary and reads ordinary local conversation metadata and

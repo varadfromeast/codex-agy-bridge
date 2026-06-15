@@ -67,17 +67,21 @@ def launch(
         ],
         check=True,
     )
-    subprocess.run(
-        [
-            "tmux",
-            "pipe-pane",
-            "-o",
-            "-t",
-            session,
-            f"cat >> {terminal_log}",
-        ],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "tmux",
+                "pipe-pane",
+                "-o",
+                "-t",
+                session,
+                f"cat >> {shlex.quote(str(terminal_log))}",
+            ],
+            check=True,
+        )
+    except Exception:
+        stop(session)
+        raise
 
 
 def attach(session: str, *, check: bool = False) -> None:

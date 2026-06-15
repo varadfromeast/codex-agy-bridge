@@ -45,6 +45,10 @@ packages = ["src/codex_agy_bridge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "live: invokes the real Antigravity CLI through a fresh MCP stdio server",
+  "live_slow: long-running or high-pressure live acceptance test",
+]
 
 [tool.ruff]
 line-length = 88

@@ -4,8 +4,9 @@ import threading
 
 import pytest
 
-from codex_agy_bridge import core, orchestration
+from codex_agy_bridge import core, interactive_input, orchestration
 from codex_agy_bridge._orchestrator import RunnerOrchestrator
+from codex_agy_bridge.execution import MockSession
 from codex_agy_bridge.process import ProcessManager
 from codex_agy_bridge.store import MemoryRunStore
 
@@ -184,6 +185,54 @@ def test_interactive_send_text_queues_submitted_prompt(monkeypatch, tmp_path):
     assert result["sent"] is True
     assert result["execution_mode"] == "interactive"
     assert result["delivery"] == "queued_interactive_prompt"
+
+
+def test_print_run_rejects_terminal_text_injection(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "print",
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+
+    with pytest.raises(ValueError, match="only supported for interactive Runs"):
+        orchestration.send_text("run-1", "must not inject")
+
+
+def test_interactive_status_exposes_experimental_queue_state(tmp_path):
+    store = MemoryRunStore()
+    manager = ConcurrentProcessManager()
+    manager.release_first.set()
+    store.save_run(
+        "run-1",
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "runner_pid": 42,
+            "tmux_session": "agy-target",
+            "execution_mode": "interactive",
+            "interactive_prompt_in_flight": True,
+        },
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path,
+        store=store,
+        process_manager=manager,
+    )
+    interactive_input.enqueue(orchestrator.run_dir("run-1"), "second")
+    interactive_input.enqueue(orchestrator.run_dir("run-1"), "third")
+
+    status = orchestrator.status("run-1")
+
+    assert status["interactive_queue"] == {
+        "experimental": True,
+        "queued_prompts": 2,
+        "delivery_state": "waiting_for_response",
+    }
 
 
 def test_interactive_unsubmitted_text_uses_run_tmux_session(monkeypatch, tmp_path):
@@ -381,6 +430,47 @@ def test_status_does_not_fail_queued_run_before_spawn(tmp_path):
     orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
 
     assert orchestrator.status("queued-run")["status"] == "queued"
+
+
+def test_status_fails_run_and_stops_session_when_supervisor_exits(tmp_path):
+    class SplitLivenessProcessManager(ProcessManager):
+        def spawn(self, args, cwd, stdout, stderr):
+            raise AssertionError("spawn is not expected")
+
+        def is_alive(self, pid):
+            return pid == 202
+
+        def killpg(self, gpid, sig):
+            raise AssertionError("killpg is not expected")
+
+        def kill(self, pid, sig):
+            raise AssertionError("kill is not expected")
+
+    store = MemoryRunStore()
+    session = MockSession(tmp_path / "run")
+    session.start("run", ["agy"], tmp_path)
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "running",
+            "runner_pid": 101,
+            "agy_pid": 202,
+            "tmux_session": "agy-run",
+        },
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path,
+        store=store,
+        process_manager=SplitLivenessProcessManager(),
+        session_factory=lambda _state, _run_dir: session,
+    )
+
+    result = orchestrator.status("run")
+
+    assert result["status"] == "failed"
+    assert result["error"] == "runner exited before recording a terminal status"
+    assert session.is_alive() is False
 
 
 def test_concurrent_goal_targets_preserve_both_registrations(tmp_path):

@@ -117,26 +117,36 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     start = next(tool for tool in tools.tools if tool.name == "agy_start")
     assert start.outputSchema is not None
     assert start.outputSchema["type"] == "object"
-    assert start.inputSchema["properties"]["visible_terminal"]["default"] is None
+    assert "visible_terminal" not in start.inputSchema["properties"]
     assert start.inputSchema["properties"]["sandbox"]["default"] is False
     assert "additional_directories" in start.inputSchema["properties"]
+    assert "CLI policy hint" in start.description
+    assert "not filesystem containment" in " ".join(start.description.split())
     assert (
         start.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
         is True
     )
     continuation = next(tool for tool in tools.tools if tool.name == "agy_continue")
-    assert (
-        continuation.inputSchema["properties"]["visible_terminal"]["default"]
-        is None
-    )
+    assert "visible_terminal" not in continuation.inputSchema["properties"]
+    assert "CLI policy hint" in continuation.description
     assert (
         continuation.inputSchema["properties"]["dangerously_skip_permissions"][
             "default"
         ]
         is True
     )
+    interactive = next(
+        tool for tool in tools.tools if tool.name == "agy_interactive_start"
+    )
+    assert "EXPERIMENTAL" in interactive.description
+    assert "may deadlock" in interactive.description
+    assert "should not be used often" in interactive.description
+    goal = next(tool for tool in tools.tools if tool.name == "agy_goal_create")
+    assert "MCP scheduler" in goal.description
+    assert "not an Antigravity feature" in " ".join(goal.description.split())
     target = next(tool for tool in tools.tools if tool.name == "agy_goal_target_start")
-    assert target.inputSchema["properties"]["visible_terminal"]["default"] is None
+    assert "visible_terminal" not in target.inputSchema["properties"]
+    assert "MCP scheduler" in target.description
     assert (
         target.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
         is None

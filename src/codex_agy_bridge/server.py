@@ -34,10 +34,12 @@ mcp = StrictFastMCP(
         "exact conversation_id for follow-up work. For bounded parallel work, "
         "call agy_goal_create once, call agy_goal_target_start once per unique "
         "named target, then poll agy_goal_status for the aggregate result. "
+        "Goals are provided by the MCP scheduler, not by Antigravity. "
         "Use agy_cancel to stop an active run. Targets support "
         "agy_target_open_terminal and agy_target_send_text. Use "
-        "agy_interactive_start when subsequent text must be consumed as "
-        "conversation input. Use agy_models and agy_doctor for discovery. "
+        "agy_interactive_start sparingly when subsequent text must be consumed "
+        "as conversation input; interactive queue delivery is experimental. "
+        "Use agy_models and agy_doctor for discovery. "
         "Antigravity is agentic and the workspace is not a security boundary."
     ),
 )
@@ -83,14 +85,14 @@ def agy_start(
     model: str | None = DEFAULT_MODEL,
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
-    visible_terminal: bool | None = None,
 ) -> dict[str, Any]:
     """Start a new asynchronous Antigravity conversation.
 
-    The deprecated visible_terminal field is accepted and ignored. The call
-    returns immediately with a run_id. Antigravity print mode is
+    The call returns immediately with a run_id. Antigravity print mode is
     agentic; enabling dangerously_skip_permissions permits unattended commands
-    and file edits with the current user's privileges.
+    and file edits with the current user's privileges. sandbox and
+    additional_directories are CLI policy hints forwarded to Antigravity, not
+    filesystem containment or a bridge security boundary.
     """
     return public_state(
         cast(
@@ -119,10 +121,15 @@ def agy_interactive_start(
     sandbox: bool = True,
     additional_directories: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Start a persistent interactive Antigravity session.
+    """EXPERIMENTAL: start a persistent interactive Antigravity session.
 
-    Completed responses do not terminate this session. Use
-    agy_target_send_text for subsequent prompts and agy_cancel to close it.
+    This should not be used often. The bridge queues input and releases one
+    prompt after detecting a completed planner response. This depends on
+    transcript semantics and may deadlock if agy changes response event types.
+    Completed responses do not terminate this session. Use agy_target_send_text
+    for subsequent prompts and agy_cancel to close it. sandbox and
+    additional_directories are CLI policy hints forwarded to Antigravity, not
+    filesystem containment or a bridge security boundary.
     """
     return public_state(
         cast(
@@ -152,9 +159,12 @@ def agy_continue(
     model: str | None = DEFAULT_MODEL,
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
-    visible_terminal: bool | None = None,
 ) -> dict[str, Any]:
-    """Continue an exact conversation; visible_terminal is ignored."""
+    """Continue an exact conversation.
+
+    sandbox and additional_directories are CLI policy hints forwarded to
+    Antigravity, not filesystem containment or a bridge security boundary.
+    """
     return public_state(
         cast(
             dict[str, Any],
@@ -248,7 +258,13 @@ def agy_goal_create(
     additional_directories: list[str] | None = None,
     dangerously_skip_permissions: bool = True,
 ) -> dict[str, Any]:
-    """Create a lightweight parent goal for bounded parallel targets."""
+    """Create an MCP scheduler container for bounded parallel targets.
+
+    Goals and target aggregation are bridge scheduling features, not an
+    Antigravity feature and not shared native conversation context. sandbox and
+    additional_directories are CLI policy hints forwarded independently to
+    each target, not filesystem containment or a bridge security boundary.
+    """
     return cast(
         dict[str, Any],
         orchestration.create_goal(
@@ -272,9 +288,14 @@ def agy_goal_target_start(
     dangerously_skip_permissions: bool | None = None,
     sandbox: bool | None = None,
     additional_directories: list[str] | None = None,
-    visible_terminal: bool | None = None,
 ) -> dict[str, Any]:
-    """Start one named goal target; visible_terminal is ignored."""
+    """Start one independent target managed by the MCP scheduler.
+
+    Goal targets are a bridge scheduling feature, not an Antigravity feature;
+    targets do not gain shared native conversation context. sandbox and
+    additional_directories are CLI policy hints forwarded to Antigravity, not
+    filesystem containment or a bridge security boundary.
+    """
     return public_state(
         cast(
             dict[str, Any],
@@ -309,7 +330,12 @@ def agy_target_send_text(
     text: str,
     enter: bool = True,
 ) -> dict[str, Any]:
-    """Send a prompt to interactive mode or terminal keys to print mode."""
+    """Send input to an experimental interactive Run only.
+
+    Submitted prompts are durably queued and released one at a time after the
+    bridge observes a completed planner response. This transcript-dependent
+    protocol may deadlock if agy changes response event types.
+    """
     return orchestration.send_text(run_id, text, enter=enter)
 
 
