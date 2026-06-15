@@ -81,6 +81,32 @@ codex mcp add codex-agy-bridge \
   -- "$(command -v uvx)" codex-agy-bridge@latest
 ```
 
+Paste the command exactly as shown. Do not replace `$` or the text inside
+`$(...)` manually. In `zsh`, `bash`, and other POSIX-compatible shells,
+`$(command -v agy)` and `$(command -v uvx)` are command substitutions: the
+shell replaces them with the absolute paths to the installed executables.
+For example, the command may expand to:
+
+```bash
+codex mcp add codex-agy-bridge \
+  --env AGY_CMD="/Users/alice/.local/bin/agy" \
+  -- "/Users/alice/.local/bin/uvx" codex-agy-bridge@latest
+```
+
+Before installing, confirm that both commands are available:
+
+```bash
+command -v agy
+command -v uvx
+```
+
+Neither command should produce empty output. If `uvx` is missing, install
+`uv`, which provides both `uv` and `uvx`:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 Restart Codex, then verify:
 
 ```bash
@@ -94,6 +120,12 @@ server, it launches the absolute `uvx` executable recorded by the command.
 environment, installs the package and its dependencies, then runs the
 `codex-agy-bridge` console script. `AGY_CMD` pins the bridge to the user's
 already-installed and authenticated `agy` executable.
+
+`uvx` is intentionally not bundled inside `codex-agy-bridge`. It is the
+external package runner that downloads and starts the bridge, so the bridge
+cannot install its own runner before it is launched. Keeping `uv` as an
+explicit prerequisite also lets Astral provide the correct signed executable
+for the user's operating system and CPU architecture.
 
 ### Ask a Codex agent to install it
 
