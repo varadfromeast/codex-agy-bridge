@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codex_agy_bridge import runner
+from codex_agy_bridge import runner, terminal
 
 
 def test_build_command_places_flags_before_print(monkeypatch, tmp_path):
@@ -92,11 +92,11 @@ def test_terminate_process_group_falls_back_when_group_signal_is_denied(monkeypa
     ]
 
 
-def test_launch_process_uses_tmux_for_visible_target(monkeypatch, tmp_path):
+def test_launch_process_uses_tmux(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(runner, "run_dir", lambda _: tmp_path)
     monkeypatch.setattr(
-        runner.subprocess,
+        terminal.subprocess,
         "run",
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
@@ -105,8 +105,6 @@ def test_launch_process_uses_tmux_for_visible_target(monkeypatch, tmp_path):
         {"run_id": "run-1", "tmux_session": "agy-target"},
         ["/usr/local/bin/agy", "--print", "work"],
         workspace=str(tmp_path),
-        stdout=None,
-        stderr=None,
     )
 
     assert process is None
@@ -127,36 +125,31 @@ def test_launch_process_uses_tmux_for_visible_target(monkeypatch, tmp_path):
 
 
 def test_append_terminal_progress_renders_sanitized_events(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        runner,
-        "compact_steps",
-        lambda *_args, **_kwargs: [
-            {
-                "step_index": 7,
-                "created_at": "2026-06-13T10:33:23Z",
-                "type": "PLANNER_RESPONSE",
-                "status": "DONE",
-                "tool_calls": [
-                    {
-                        "name": "run_command",
-                        "args": {"CommandLine": "pytest"},
-                    }
-                ],
-            },
-            {
-                "step_index": 8,
-                "created_at": "2026-06-13T10:33:24Z",
-                "type": "RUN_COMMAND",
-                "status": "DONE",
-                "content": "257 passed",
-            },
-        ],
-    )
+    steps = [
+        {
+            "step_index": 7,
+            "created_at": "2026-06-13T10:33:23Z",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "tool_calls": [
+                {
+                    "name": "run_command",
+                    "args": {"CommandLine": "pytest"},
+                }
+            ],
+        },
+        {
+            "step_index": 8,
+            "created_at": "2026-06-13T10:33:24Z",
+            "type": "RUN_COMMAND",
+            "status": "DONE",
+            "content": "257 passed",
+        },
+    ]
     progress_log = tmp_path / "terminal-progress.log"
 
     latest = runner.append_terminal_progress(
-        "conversation-1",
-        after_step=6,
+        steps,
         progress_log=progress_log,
     )
 

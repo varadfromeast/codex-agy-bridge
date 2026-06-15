@@ -175,6 +175,7 @@ source = { editable = "." }
 dependencies = [
     { name = "filelock" },
     { name = "mcp" },
+    { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
@@ -192,6 +193,7 @@ dev = [
 requires-dist = [
     { name = "filelock", specifier = ">=3.18,<4" },
     { name = "mcp", specifier = ">=1.27,<2" },
+    { name = "pydantic", specifier = ">=2,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11,<1" },
 ]

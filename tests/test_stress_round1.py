@@ -105,7 +105,6 @@ def start_run(
         conversation_id=None,
         goal_id=goal_id,
         target_name=target_name,
-        visible_terminal=True,
     )
 
 

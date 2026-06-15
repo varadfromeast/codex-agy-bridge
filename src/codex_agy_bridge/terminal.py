@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -21,6 +22,11 @@ def launch(
     stdout_log: Path,
     stderr_log: Path,
 ) -> None:
+    session_environment: list[str] = []
+    for name in ("AGY_CMD", "AGY_BRIDGE_STATE_DIR", "AGY_BRIDGE_AGY_ROOT"):
+        value = os.environ.get(name)
+        if value is not None:
+            session_environment.extend(["-e", f"{name}={value}"])
     script = "\n".join(
         [
             "set -u",
@@ -50,6 +56,7 @@ def launch(
             session,
             "-c",
             workspace,
+            *session_environment,
             "sh",
             "-c",
             script,

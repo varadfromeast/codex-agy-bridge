@@ -5,10 +5,10 @@ import inspect
 from codex_agy_bridge import server
 
 
-def test_create_run_defaults_to_visible_terminal():
+def test_create_run_requires_tmux_without_execution_mode_flag():
     parameters = inspect.signature(server.create_run).parameters
 
-    assert parameters["visible_terminal"].default is True
+    assert "visible_terminal" not in parameters
     assert parameters["dangerously_skip_permissions"].default is True
 
 

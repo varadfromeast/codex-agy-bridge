@@ -2,11 +2,32 @@
 
 Date: 2026-06-14
 
-## Scope
+## Live MCP Campaign
 
-Two stress campaigns exercised orchestration, persistence, lifecycle
-reconciliation, goals, janitor cleanup, transcripts, configuration, and
-cross-process locking. The permanent regression suites are:
+Codex executed 100 black-box scenarios directly through the running
+`mcp__codex_agy_bridge` tools in ten adaptive batches. The authoritative
+scenario ledger is `TODO`.
+
+Seven defects were confirmed and fixed:
+
+1. Goals with terminal canceled targets aggregated as `pending`.
+2. Opening a stopped visible target falsely returned `opened: true`.
+3. Whitespace-only continuation IDs spawned doomed runner processes.
+4. Active continuation results could expose a prior internal completion marker.
+5. Absolute and traversal IDs could read run/goal state outside the state root.
+6. Boolean `max_parallel` was silently coerced to integer 1 by the MCP schema.
+7. Empty goal models persisted state that could not subsequently be loaded.
+
+Fresh-process stdio integration tests cover fixes that the already-running MCP
+process cannot hot-reload, including strict goal parallelism, identifier path
+containment, and blank continuation rejection.
+
+## Earlier Repository Campaigns
+
+Two earlier repository-level stress campaigns exercised orchestration,
+persistence, lifecycle reconciliation, goals, janitor cleanup, transcripts,
+configuration, and cross-process locking. Their permanent regression suites
+are:
 
 - `tests/test_stress_round1.py`: 17 scenarios
 - `tests/test_stress_round2.py`: 10 scenarios

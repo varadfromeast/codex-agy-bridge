@@ -6,23 +6,23 @@ import json
 import os
 import shutil
 import signal
-import subprocess
 import sys
 import time
 from contextlib import suppress
 from pathlib import Path
 
 from codex_agy_bridge import core
-from codex_agy_bridge.execution import HeadlessSession, TmuxSession
+from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.state import RunState
 
 clean_response = core.clean_response
-compact_steps = core.compact_steps
+compact_step_records = core.compact_step_records
 conversation_for_prompt_after = core.conversation_for_prompt_after
 final_response = core.final_response
 load_state = core.load_state
 run_dir = core.run_dir
 run_provider_health = core.run_provider_health
+transcript_path = core.transcript_path
 update_state = core.update_state
 
 COMPLETION_STABILITY_SECONDS = int(
@@ -65,39 +65,27 @@ def launch_process(
     command: list[str],
     *,
     workspace: str,
-    stdout: object,
-    stderr: object,
-    progress_log: Path | None = None,
-) -> subprocess.Popen[bytes] | None:
+) -> None:
     run_id = str(state["run_id"])
     run_directory = run_dir(run_id)
-    if state.get("tmux_session"):
-        tmux_session = TmuxSession(
-            run_directory, session_name=state.get("tmux_session")
-        )
-        tmux_session.start(run_id, command, Path(workspace))
-        return None
-    else:
-        headless_session = HeadlessSession(run_directory)
-        headless_session.start(run_id, command, Path(workspace))
-        return headless_session.process
+    tmux_session = TmuxSession(run_directory, session_name=state.get("tmux_session"))
+    tmux_session.start(run_id, command, Path(workspace))
+    return None
 
 
 def append_terminal_progress(
-    conversation_id: str,
+    records: list[dict[str, object]],
     *,
-    after_step: int,
     progress_log: Path,
 ) -> int:
-    steps = compact_steps(
-        conversation_id,
-        after_step=after_step,
+    steps = compact_step_records(
+        records,
         limit=200,
         include_content=True,
         max_content_chars=8000,
     )
     if not steps:
-        return after_step
+        return -1
 
     with progress_log.open("a", encoding="utf-8") as handle:
         for step in steps:
@@ -124,24 +112,13 @@ def append_terminal_progress(
     return int(steps[-1]["step_index"])
 
 
-def run_active(process: subprocess.Popen[bytes] | None, session: str | None) -> bool:
-    if session:
-        tmux_sess = TmuxSession(Path(), session_name=session)
-        return tmux_sess.is_alive()
-    else:
-        headless_sess = HeadlessSession(Path())
-        headless_sess.process = process
-        return headless_sess.is_alive()
+def run_active(session: str | None) -> bool:
+    return bool(session and TmuxSession(Path(), session_name=session).is_alive())
 
 
-def stop_run(process: subprocess.Popen[bytes] | None, session: str | None) -> None:
+def stop_run(session: str | None) -> None:
     if session:
-        tmux_sess = TmuxSession(Path(), session_name=session)
-        tmux_sess.kill()
-    else:
-        headless_sess = HeadlessSession(Path())
-        headless_sess.process = process
-        headless_sess.kill()
+        TmuxSession(Path(), session_name=session).kill()
 
 
 def terminate_process_group(pid: int) -> None:

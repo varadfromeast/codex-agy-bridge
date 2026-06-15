@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -15,12 +16,11 @@ from filelock import FileLock
 
 from codex_agy_bridge import core, terminal
 from codex_agy_bridge.exceptions import (
-    AntigravityAuthRequired,
     ConcurrencyLimitExceeded,
     RunNotFoundError,
     WorkspaceAccessError,
 )
-from codex_agy_bridge.execution import ExecutionSession, HeadlessSession, TmuxSession
+from codex_agy_bridge.execution import ExecutionSession, TmuxSession
 from codex_agy_bridge.process import LocalProcessManager, ProcessManager
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
@@ -31,7 +31,7 @@ from codex_agy_bridge.store import DiskRunStore, RunStore
 
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 4
-AUTH_BLOCKING_STATUSES = {"auth_interaction_required", "auth_unavailable"}
+JANITOR_INTERVAL_SECONDS = 60
 
 
 def _global_max_parallel() -> int:
@@ -65,7 +65,6 @@ def _request_key(
     model: str,
     goal_id: str | None,
     target_name: str | None,
-    visible_terminal: bool,
 ) -> str:
     """Generate a unique request key for checking duplicates.
 
@@ -78,8 +77,6 @@ def _request_key(
         model: Target LLM model name.
         goal_id: Optional parent goal ID.
         target_name: Optional target name within a goal.
-        visible_terminal: True if running inside a visible Tmux session.
-
     Returns:
         Hex digest string representing the request options.
     """
@@ -92,7 +89,6 @@ def _request_key(
         "model": model,
         "goal_id": goal_id,
         "target_name": target_name,
-        "visible_terminal": visible_terminal,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -110,12 +106,9 @@ def default_session_factory(state: RunState, run_dir: Path) -> ExecutionSession:
         run_dir: Path to the run directory.
 
     Returns:
-        An ExecutionSession instance (TmuxSession or HeadlessSession).
+        A TmuxSession instance.
     """
-    if state.get("visible_terminal") or state.get("tmux_session"):
-        return TmuxSession(run_dir, session_name=state.get("tmux_session"))
-    else:
-        return HeadlessSession(run_dir, pid=state.get("agy_pid"))
+    return TmuxSession(run_dir, session_name=state.get("tmux_session"))
 
 
 class RunnerOrchestrator:
@@ -304,6 +297,24 @@ class RunnerOrchestrator:
         janitor = RunJanitor(self.state_root, self.store, self.process_manager)
         janitor.clean(max_log_age_days)
 
+    def maybe_run_janitor(self, max_log_age_days: int = 7) -> None:
+        """Run cleanup at most once per interval across bridge processes."""
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        timestamp_path = self.state_root / "janitor.json"
+        with FileLock(str(self.state_root / "janitor.lock"), timeout=10):
+            try:
+                last_run = float(
+                    json.loads(timestamp_path.read_text(encoding="utf-8"))["last_run"]
+                )
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                last_run = 0
+            now = time.time()
+            elapsed = now - last_run
+            if 0 <= elapsed < JANITOR_INTERVAL_SECONDS:
+                return
+            self.run_janitor(max_log_age_days)
+            core.atomic_write_json(timestamp_path, {"last_run": now})
+
     def create_run(
         self,
         *,
@@ -315,7 +326,6 @@ class RunnerOrchestrator:
         model: str | None = DEFAULT_MODEL,
         goal_id: str | None = None,
         target_name: str | None = None,
-        visible_terminal: bool = True,
     ) -> RunState:
         """Start a new asynchronous Antigravity conversation or reuse duplicate.
 
@@ -328,39 +338,25 @@ class RunnerOrchestrator:
             model: Name of the LLM model to request.
             goal_id: Optional parent goal ID.
             target_name: Optional target identifier.
-            visible_terminal: True to execute inside visible tmux pane.
-
         Returns:
             The created or reused RunState dict.
 
         Raises:
             WorkspaceAccessError: If the workspace is not a valid directory.
             ValueError: For invalid parameter values.
-            AntigravityAuthRequired: If preflight pre-authorization is needed.
             ConcurrencyLimitExceeded: If parallel run limits are breached.
         """
-        self.run_janitor()
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
+        if conversation_id is not None and not conversation_id.strip():
+            raise ValueError("conversation_id must not be empty")
         root = Path(workspace).expanduser().resolve()
         if not root.is_dir():
             raise WorkspaceAccessError(f"workspace is not a directory: {root}")
         if timeout_seconds < 10 or timeout_seconds > 86400:
             raise ValueError("timeout_seconds must be between 10 and 86400")
+        self.maybe_run_janitor()
 
-        from codex_agy_bridge import orchestration
-
-        if not visible_terminal:
-            health = orchestration.latest_provider_health(self.state_root)
-            if health["status"] in AUTH_BLOCKING_STATUSES:
-                action = health.get(
-                    "action",
-                    "Start with visible_terminal=true and complete Antigravity auth.",
-                )
-                raise AntigravityAuthRequired(
-                    "Antigravity auth preflight failed for headless run: "
-                    f"{health['status']}. {action}"
-                )
         effective_model = model or DEFAULT_MODEL
         request_key = _request_key(
             prompt=prompt,
@@ -371,7 +367,6 @@ class RunnerOrchestrator:
             model=effective_model,
             goal_id=goal_id,
             target_name=target_name,
-            visible_terminal=visible_terminal,
         )
         from codex_agy_bridge import orchestration
 
@@ -436,11 +431,8 @@ class RunnerOrchestrator:
                 "model": effective_model,
                 "goal_id": goal_id,
                 "target_name": target_name,
-                "visible_terminal": visible_terminal,
                 "request_key": request_key,
-                "tmux_session": (
-                    terminal.session_name(run_id) if visible_terminal else None
-                ),
+                "tmux_session": terminal.session_name(run_id),
                 "runner_pid": None,
                 "agy_pid": None,
                 "result": None,
@@ -663,10 +655,18 @@ class RunnerOrchestrator:
         root = Path(workspace).expanduser().resolve()
         if not objective.strip() or not root.is_dir():
             raise ValueError("objective and an existing workspace are required")
-        if max_parallel < 1 or max_parallel > DEFAULT_MAX_PARALLEL:
+        if (
+            not isinstance(max_parallel, int)
+            or isinstance(max_parallel, bool)
+            or max_parallel < 1
+            or max_parallel > DEFAULT_MAX_PARALLEL
+        ):
             raise ValueError(
-                f"max_parallel must be between 1 and {DEFAULT_MAX_PARALLEL}"
+                "max_parallel must be an integer between "
+                f"1 and {DEFAULT_MAX_PARALLEL}"
             )
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must not be empty")
         goal_id = f"goal-{uuid.uuid4().hex[:10]}"
         now = core.utc_now()
         state: GoalState = {
@@ -691,7 +691,6 @@ class RunnerOrchestrator:
         prompt: str,
         timeout_seconds: int = 900,
         dangerously_skip_permissions: bool = True,
-        visible_terminal: bool = True,
     ) -> RunState:
         """Create and launch a run linked to a parent goal target.
 
@@ -701,8 +700,6 @@ class RunnerOrchestrator:
             prompt: Run prompt.
             timeout_seconds: Execution timeout limit.
             dangerously_skip_permissions: Skip interactive permission prompts.
-            visible_terminal: Run inside visible Tmux window.
-
         Returns:
             The launched RunState dict.
 
@@ -724,7 +721,6 @@ class RunnerOrchestrator:
                 model=goal["model"],
                 goal_id=goal_id,
                 target_name=target_name,
-                visible_terminal=visible_terminal,
             )
             goal["targets"] = {**goal["targets"], target_name: state["run_id"]}
             goal["updated_at"] = core.utc_now()
@@ -766,6 +762,8 @@ class RunnerOrchestrator:
             aggregate = "failed"
         elif statuses & ACTIVE_STATUSES:
             aggregate = "running"
+        elif "canceled" in statuses:
+            aggregate = "canceled"
         else:
             aggregate = "pending"
         return {**goal, "status": aggregate, "targets": targets}
@@ -780,11 +778,13 @@ class RunnerOrchestrator:
             Dict indicating open status.
 
         Raises:
-            ValueError: If the run was not started with a visible terminal.
+            ValueError: If the tmux session is unavailable.
         """
         session = self.load_state(run_id).get("tmux_session")
         if not session:
-            raise ValueError("run was not started with visible_terminal=true")
+            raise ValueError("run does not have a tmux session")
+        if not terminal.alive(session):
+            raise ValueError(f"tmux session is not running: {session}")
         terminal.attach(session, check=True)
         return {"run_id": run_id, "tmux_session": session, "opened": True}
 
@@ -802,11 +802,11 @@ class RunnerOrchestrator:
             Dict indicating transmission status.
 
         Raises:
-            ValueError: If the run was not started with a visible terminal.
+            ValueError: If the tmux session is unavailable.
         """
         state = self.load_state(run_id)
         if not state.get("tmux_session"):
-            raise ValueError("run was not started with visible_terminal=true")
+            raise ValueError("run does not have a tmux session")
         session = self.get_session(state)
         session.send_input(text, enter=enter)
         return {

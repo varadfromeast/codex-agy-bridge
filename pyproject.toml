@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
   "filelock>=3.18,<4",
   "mcp>=1.27,<2",
+  "pydantic>=2,<3",
 ]
 
 [project.urls]

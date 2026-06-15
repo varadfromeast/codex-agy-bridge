@@ -34,7 +34,6 @@ class RunState(TypedDict, total=False):
     model: str
     goal_id: str | None
     target_name: str | None
-    visible_terminal: bool
     request_key: str
     tmux_session: str | None
     runner_pid: int | None

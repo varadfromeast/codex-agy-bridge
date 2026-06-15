@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
@@ -39,18 +40,33 @@ STATE_ROOT = Path(
 ).expanduser()
 LAST_CONVERSATIONS = AGY_ROOT / "cache" / "last_conversations.json"
 BRAIN_DIR = AGY_ROOT / "brain"
-
-
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def validate_identifier(value: str, label: str) -> str:
+    """Validate an identifier before using it as one filesystem path segment."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\0" in value
+        or value in {".", ".."}
+        or Path(value).name != value
+        or len(value.encode("utf-8")) > 255
+    ):
+        raise ValueError(f"{label} must be a single non-empty path segment")
+    return value
+
+
 def run_dir(run_id: str, state_root: Path | None = None) -> Path:
-    return (state_root or STATE_ROOT) / "runs" / run_id
+    return (state_root or STATE_ROOT) / "runs" / validate_identifier(run_id, "run_id")
 
 
 def goal_dir(goal_id: str, state_root: Path | None = None) -> Path:
-    return (state_root or STATE_ROOT) / "goals" / goal_id
+    return (state_root or STATE_ROOT) / "goals" / validate_identifier(
+        goal_id,
+        "goal_id",
+    )
 
 
 def goal_path(goal_id: str, state_root: Path | None = None) -> Path:
@@ -174,11 +190,21 @@ def latest_step(conversation_id: str) -> dict[str, Any] | None:
     return steps[-1] if steps else None
 
 
+def _read_tail(path: Path, max_bytes: int) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - max_bytes))
+            return handle.read(max_bytes).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def provider_health(log_path: Path) -> dict[str, Any]:
     """Classify provider health from bounded recent Antigravity logs."""
-    if not log_path.exists():
+    text = _read_tail(log_path, 100_000).lower()
+    if not text:
         return {"status": "unknown"}
-    text = log_path.read_text(encoding="utf-8", errors="replace")[-100_000:].lower()
     if "resource_exhausted" in text or "quota exhausted" in text:
         return {"status": "quota_exhausted"}
     if "rate limit" in text or "too many requests" in text:
@@ -208,9 +234,7 @@ def run_provider_health(directory: Path) -> dict[str, Any]:
     if health["status"] != "unknown":
         return health
     stdout_path = directory / "agy.stdout.log"
-    if not stdout_path.exists():
-        return health
-    text = stdout_path.read_text(encoding="utf-8", errors="replace")[-20_000:].lower()
+    text = _read_tail(stdout_path, 20_000).lower()
     if "timed out waiting for response" in text:
         return {
             "status": "response_timeout",
@@ -220,32 +244,6 @@ def run_provider_health(directory: Path) -> dict[str, Any]:
             ),
         }
     return health
-
-
-def latest_provider_health(state_root: Path) -> dict[str, Any]:
-    """Return the most recent known provider health from persisted run logs."""
-    runs_root = state_root / "runs"
-    if not runs_root.exists():
-        return {"status": "unknown"}
-
-    candidates: list[tuple[float, Path]] = []
-    for directory in runs_root.iterdir():
-        if not directory.is_dir():
-            continue
-        try:
-            modified_at = max(
-                (path.stat().st_mtime for path in directory.glob("agy*.log")),
-                default=directory.stat().st_mtime,
-            )
-        except OSError:
-            continue
-        candidates.append((modified_at, directory))
-
-    for _modified_at, directory in sorted(candidates, reverse=True):
-        health = run_provider_health(directory)
-        if health["status"] != "unknown":
-            return {**health, "run_id": directory.name}
-    return {"status": "unknown"}
 
 
 def conversation_for_workspace(workspace: str) -> str | None:
@@ -294,16 +292,27 @@ def conversation_for_prompt_after(
 
 def transcript_path(conversation_id: str) -> Path:
     return (
-        BRAIN_DIR / conversation_id / ".system_generated" / "logs" / "transcript.jsonl"
+        BRAIN_DIR
+        / validate_identifier(conversation_id, "conversation_id")
+        / ".system_generated"
+        / "logs"
+        / "transcript.jsonl"
     )
 
 
 def read_steps(conversation_id: str) -> list[dict[str, Any]]:
-    path = transcript_path(conversation_id)
-    if not path.exists():
+    """Read the complete transcript without retaining process-local state."""
+    try:
+        lines = transcript_path(conversation_id).read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()
+    except OSError:
         return []
     steps: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in lines:
+        if not line.strip():
+            continue
         try:
             value = json.loads(line)
         except json.JSONDecodeError:
@@ -314,7 +323,8 @@ def read_steps(conversation_id: str) -> list[dict[str, Any]]:
 
 
 def final_response(conversation_id: str) -> str | None:
-    for step in reversed(read_steps(conversation_id)):
+    response = None
+    for step in read_steps(conversation_id):
         if (
             step.get("source") == "MODEL"
             and step.get("type") == "PLANNER_RESPONSE"
@@ -322,14 +332,20 @@ def final_response(conversation_id: str) -> str | None:
             and isinstance(step.get("content"), str)
             and step["content"].strip()
         ):
-            return step["content"]
-    return None
+            response = step["content"]
+    return response
 
 
 def clean_response(response: str | None, completion_marker: str | None) -> str | None:
-    if not response or not completion_marker:
+    if not response:
         return response
-    return response.replace(completion_marker, "").rstrip()
+    if completion_marker:
+        response = re.sub(
+            rf"\s*{re.escape(completion_marker)}\s*$",
+            "",
+            response,
+        )
+    return re.sub(r"\s*AGY_RUN_COMPLETE_[0-9a-fA-F]+\s*$", "", response).rstrip()
 
 
 def compact_steps(
@@ -341,9 +357,27 @@ def compact_steps(
     max_content_chars: int = 500,
 ) -> list[dict[str, Any]]:
     """Return bounded progress events, with raw trajectory content opt-in."""
+    return compact_step_records(
+        read_steps(conversation_id),
+        after_step=after_step,
+        limit=limit,
+        include_content=include_content,
+        max_content_chars=max_content_chars,
+    )
+
+
+def compact_step_records(
+    steps: list[dict[str, Any]],
+    *,
+    after_step: int = -1,
+    limit: int = 12,
+    include_content: bool = False,
+    max_content_chars: int = 500,
+) -> list[dict[str, Any]]:
+    """Compact already-parsed records without rereading their transcript."""
     selected: list[dict[str, Any]] = []
     content_limit = max(1, min(max_content_chars, 8000))
-    for step in read_steps(conversation_id):
+    for step in steps:
         index = step.get("step_index")
         if not isinstance(index, int) or index <= after_step:
             continue

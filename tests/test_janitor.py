@@ -5,6 +5,7 @@ import os
 import time
 from datetime import UTC, datetime
 
+import pytest
 from test_orchestrator import MockProcessManager
 
 from codex_agy_bridge import core
@@ -26,7 +27,6 @@ def test_janitor_cleans_up_orphans(tmp_path, monkeypatch):
         workspace=str(workspace),
         timeout_seconds=900,
         conversation_id=None,
-        visible_terminal=False,
     )
     run_id = run_state["run_id"]
 
@@ -101,3 +101,50 @@ def test_janitor_sweeps_old_logs(tmp_path):
     assert not old_log.exists()
     # run-2 should remain intact
     assert run2_dir.exists()
+
+
+def test_create_run_rate_limits_automatic_janitor(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_root = tmp_path / "state"
+    pm = MockProcessManager()
+    orch = RunnerOrchestrator(state_root=state_root, process_manager=pm)
+    clean_calls = []
+
+    monkeypatch.setenv("AGY_CMD", "/dummy/agy")
+    monkeypatch.setattr(
+        "codex_agy_bridge.janitor.RunJanitor.clean",
+        lambda _self, max_log_age_days: clean_calls.append(max_log_age_days),
+    )
+
+    for prompt in ("first", "second"):
+        orch.create_run(
+            prompt=prompt,
+            workspace=str(workspace),
+            timeout_seconds=900,
+            conversation_id=None,
+        )
+
+    assert clean_calls == [7]
+
+
+def test_invalid_create_run_does_not_run_janitor(tmp_path, monkeypatch):
+    state_root = tmp_path / "state"
+    orch = RunnerOrchestrator(
+        state_root=state_root,
+        process_manager=MockProcessManager(),
+    )
+
+    monkeypatch.setattr(
+        orch,
+        "run_janitor",
+        lambda *_args, **_kwargs: pytest.fail("janitor must run after validation"),
+    )
+
+    with pytest.raises(ValueError, match="prompt"):
+        orch.create_run(
+            prompt=" ",
+            workspace=str(tmp_path),
+            timeout_seconds=900,
+            conversation_id=None,
+        )

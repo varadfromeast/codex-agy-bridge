@@ -17,6 +17,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - run: brew install tmux
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
