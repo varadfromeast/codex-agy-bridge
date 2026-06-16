@@ -56,6 +56,8 @@ class RunState(TypedDict, total=False):
     finished_at: str
     return_code: int | None
     interactive_prompt_in_flight: bool
+    notification_resource_uri: str
+    wait_tool: str
 
 
 class GoalState(TypedDict):

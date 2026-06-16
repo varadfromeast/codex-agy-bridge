@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from test_orchestrator import MockProcessManager
 
-from codex_agy_bridge import core
+from codex_agy_bridge import core, session_events
 from codex_agy_bridge.orchestration import RunnerOrchestrator
 
 
@@ -149,6 +149,38 @@ def test_janitor_sweeps_old_logs(tmp_path):
     assert not old_log.exists()
     # run-2 should remain intact
     assert run2_dir.exists()
+
+
+def test_janitor_sweeps_old_terminal_notification_files(tmp_path):
+    state_root = tmp_path / "state"
+    orch = RunnerOrchestrator(
+        state_root=state_root,
+        process_manager=MockProcessManager(),
+    )
+    run_dir = state_root / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    core.atomic_write_json(
+        run_dir / "state.json",
+        {
+            "run_id": "run-1",
+            "status": "completed",
+            "finished_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    session_events.append_event(run_dir, "run_completed", {"status": "completed"})
+    (run_dir / "session-events.lock").touch()
+    assert (run_dir / "session-events.jsonl").exists()
+    assert (run_dir / "notify.seq").exists()
+    assert (run_dir / "session-events.lock").exists()
+    ten_days_ago_ts = time.time() - (10 * 86400)
+    os.utime(run_dir, (ten_days_ago_ts, ten_days_ago_ts))
+
+    orch.run_janitor(max_log_age_days=7)
+
+    assert (run_dir / "state.json").exists()
+    assert not (run_dir / "session-events.jsonl").exists()
+    assert not (run_dir / "notify.seq").exists()
+    assert not (run_dir / "session-events.lock").exists()
 
 
 def test_create_run_rate_limits_automatic_janitor(tmp_path, monkeypatch):

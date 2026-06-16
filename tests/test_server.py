@@ -24,3 +24,17 @@ def test_result_read_uses_simple_byte_offsets():
     assert list(parameters) == ["run_id", "offset_bytes", "max_bytes"]
     assert parameters["offset_bytes"].default == 0
     assert parameters["max_bytes"].default == 65_536
+
+
+def test_wait_accepts_run_batch_and_cursor_map():
+    parameters = inspect.signature(server.agy_wait).parameters
+
+    assert list(parameters) == [
+        "run_ids",
+        "condition",
+        "after",
+        "timeout_seconds",
+    ]
+    assert parameters["condition"].default == "any_attention"
+    assert parameters["after"].default is None
+    assert parameters["timeout_seconds"].default == 900

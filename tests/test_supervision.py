@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from codex_agy_bridge import interactive_input, runner
+from codex_agy_bridge import interactive_input, runner, session_events
 from codex_agy_bridge.supervision import RunSupervisor
 
 
@@ -46,6 +46,37 @@ def test_supervisor_classifies_successful_exit(monkeypatch, tmp_path):
     assert updates[-1]["result"] == "result"
     assert updates[-1]["return_code"] is None
     assert (tmp_path / "final-result.txt").read_text(encoding="utf-8") == "result"
+    events = session_events.read_events(tmp_path)
+    assert events[-1]["kind"] == "run_completed"
+    assert events[-1]["status"] == "completed"
+
+
+def test_supervisor_launch_emits_run_started(monkeypatch, tmp_path):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "created_at": "2026-06-16T00:00:00+00:00",
+    }
+    updates = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "build_command", lambda _state: ["/bin/true"])
+    monkeypatch.setattr(runner, "launch_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+
+    RunSupervisor("run-1")._launch()
+
+    events = session_events.read_events(tmp_path)
+    assert events[-1]["kind"] == "run_started"
+    assert events[-1]["status"] == "running"
+    assert updates[-1]["status"] == "running"
 
 
 def test_supervisor_classifies_nonzero_cli_exit(monkeypatch, tmp_path):
@@ -71,6 +102,9 @@ def test_supervisor_classifies_nonzero_cli_exit(monkeypatch, tmp_path):
     assert result == 1
     assert updates[-1]["return_code"] == 17
     assert updates[-1]["error"] == "agy exited with code 17 without a response"
+    events = session_events.read_events(tmp_path)
+    assert events[-1]["kind"] == "run_failed"
+    assert events[-1]["status"] == "failed"
 
 def test_supervisor_classifies_nonzero_exit_with_partial_response_as_failed(
     monkeypatch, tmp_path

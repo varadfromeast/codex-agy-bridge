@@ -96,25 +96,26 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     assert "agy_goal_target_start" in initialized.instructions
     assert "agy_goal_status" in initialized.instructions
     assert {tool.name for tool in tools.tools} == {
-            "agy_start",
-            "agy_interactive_start",
+        "agy_start",
+        "agy_interactive_start",
         "agy_continue",
+        "agy_wait",
         "agy_status",
         "agy_transcript",
         "agy_result",
         "agy_result_read",
-            "agy_cancel",
-            "agy_models",
-            "agy_doctor",
-            "agy_plugins",
-            "agy_plugin_validate",
-            "agy_changelog",
+        "agy_cancel",
+        "agy_models",
+        "agy_doctor",
+        "agy_plugins",
+        "agy_plugin_validate",
+        "agy_changelog",
         "agy_goal_create",
-            "agy_goal_target_start",
-            "agy_goal_status",
-            "agy_target_open_terminal",
-            "agy_target_send_text",
-        }
+        "agy_goal_target_start",
+        "agy_goal_status",
+        "agy_target_open_terminal",
+        "agy_target_send_text",
+    }
     start = next(tool for tool in tools.tools if tool.name == "agy_start")
     assert start.outputSchema is not None
     assert start.outputSchema["type"] == "object"

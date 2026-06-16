@@ -190,6 +190,8 @@ class RunRequest:
             "goal_id": self.goal_id,
             "target_name": self.target_name,
             "request_key": self.request_key,
+            "notification_resource_uri": f"agy-run://{run_id}/notifications",
+            "wait_tool": "agy_wait",
             "session_label": session_label,
             "tmux_session": tmux_session,
             "runner_pid": None,

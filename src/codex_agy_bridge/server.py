@@ -32,7 +32,9 @@ mcp = StrictFastMCP(
     instructions=(
         "Use agy_start for a new foreground Antigravity task and retain its "
         "run_id. "
-        "Poll agy_status and inspect incremental work with agy_transcript. "
+        "Use agy_wait to block for sparse lifecycle notifications instead of "
+        "polling agy_status. Inspect incremental work with agy_transcript only "
+        "when a notification says it is worth attention. "
         "Use agy_result only after terminal status. Use agy_continue with the "
         "exact conversation_id for follow-up work. For bounded parallel work, "
         "call agy_goal_create once, call agy_goal_target_start once per unique "
@@ -231,6 +233,27 @@ def agy_result_read(
         run_id,
         offset_bytes=offset_bytes,
         max_bytes=max_bytes,
+    )
+
+
+@mcp.tool()
+def agy_wait(
+    run_ids: list[str],
+    condition: str = "any_attention",
+    after: dict[str, str] | None = None,
+    timeout_seconds: int = 900,
+) -> dict[str, Any]:
+    """Block until selected Runs emit sparse lifecycle notifications.
+
+    Use this instead of repeated status polling. Timeout returns
+    matched=false rather than raising. Conditions are any_event,
+    any_attention, any_terminal, and all_terminal.
+    """
+    return orchestration.wait(
+        run_ids,
+        condition=condition,
+        after=after,
+        timeout_seconds=timeout_seconds,
     )
 
 

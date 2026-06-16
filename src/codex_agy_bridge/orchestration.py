@@ -232,6 +232,22 @@ def result_read(
     )
 
 
+def wait(
+    run_ids: list[str],
+    *,
+    condition: str = "any_attention",
+    after: dict[str, str] | None = None,
+    timeout_seconds: int = 900,
+) -> dict[str, Any]:
+    """Block until selected runs produce compact notification events."""
+    return _orchestrator.wait(
+        run_ids,
+        condition=condition,  # type: ignore[arg-type]
+        after=after,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def cancel(run_id: str) -> dict[str, Any]:
     """Request cancel of an active run and kill execution session.
 

@@ -13,7 +13,14 @@ from typing import Any, cast
 
 from filelock import FileLock
 
-from codex_agy_bridge import core, interactive_input, labels, terminal
+from codex_agy_bridge import (
+    core,
+    interactive_input,
+    labels,
+    session_events,
+    terminal,
+    waiter,
+)
 from codex_agy_bridge.cli import AntigravityCli
 from codex_agy_bridge.exceptions import ConcurrencyLimitExceeded, RunNotFoundError
 from codex_agy_bridge.execution import ExecutionSession, TmuxSession
@@ -37,6 +44,7 @@ DEFAULT_MAX_PARALLEL = 50
 JANITOR_INTERVAL_SECONDS = 60
 RESULT_PREVIEW_BYTES = 4096
 RESULT_READ_MAX_BYTES = 262_144
+WAIT_TIMEOUT_MAX_SECONDS = 3600
 
 
 def _global_max_parallel() -> int:
@@ -529,6 +537,11 @@ class RunnerOrchestrator:
                 "created_at": state.get("created_at"),
                 "updated_at": state.get("updated_at"),
                 "finished_at": state.get("finished_at"),
+                "latest_event_id": session_events.latest_event_id(
+                    self.run_dir(run_id),
+                ),
+                "notification_resource_uri": state.get("notification_resource_uri"),
+                "wait_tool": state.get("wait_tool", "agy_wait"),
                 "latest_step": latest,
                 "provider_health": core.run_provider_health(self.run_dir(run_id)),
                 "interactive_queue": interactive_queue,
@@ -655,6 +668,31 @@ class RunnerOrchestrator:
             "content": data.decode("utf-8", errors="replace"),
         }
 
+    def wait(
+        self,
+        run_ids: list[str],
+        *,
+        condition: waiter.WaitCondition = "any_attention",
+        after: dict[str, str] | None = None,
+        timeout_seconds: int = 900,
+    ) -> dict[str, Any]:
+        """Block until selected runs have durable events worth reporting."""
+        if not run_ids:
+            raise ValueError("run_ids must not be empty")
+        timeout_seconds = min(max(0, int(timeout_seconds)), WAIT_TIMEOUT_MAX_SECONDS)
+        run_dirs = {}
+        for run_id in run_ids:
+            self.load_state(run_id)
+            run_dirs[run_id] = self.run_dir(run_id)
+        return waiter.wait_for_runs(
+            run_dirs,
+            state_root=self.state_root,
+            load_state=self.load_state,
+            condition=condition,
+            after=after,
+            timeout_seconds=timeout_seconds,
+        )
+
     def _ensure_result_artifact(self, state: RunState) -> Path | None:
         run_id = state["run_id"]
         path = self.result_artifact_path(run_id)
@@ -692,6 +730,11 @@ class RunnerOrchestrator:
         cancel_file = self.run_dir(run_id) / "cancel"
         cancel_file.parent.mkdir(parents=True, exist_ok=True)
         cancel_file.touch()
+        session_events.append_event(
+            self.run_dir(run_id),
+            "cancel_requested",
+            {"status": "cancel_requested"},
+        )
         state = self.update_state(
             run_id,
             status="cancel_requested",
@@ -901,6 +944,11 @@ class RunnerOrchestrator:
         if not terminal.alive(session):
             raise ValueError(f"tmux session is not running: {session}")
         terminal.attach(session, check=True)
+        session_events.append_event(
+            self.run_dir(run_id),
+            "terminal_opened",
+            {"tmux_session": session},
+        )
         return {
             "run_id": run_id,
             "tmux_session": session,
@@ -961,6 +1009,14 @@ class RunnerOrchestrator:
             session.send_input(text, enter=enter)
         except ValueError as error:
             return self._send_text_not_delivered(state, error=str(error))
+        session_events.append_event(
+            self.run_dir(run_id),
+            "mcp_input",
+            {
+                "delivery": delivery,
+                "enter": enter,
+            },
+        )
         return {
             "run_id": run_id,
             "tmux_session": state.get("tmux_session"),

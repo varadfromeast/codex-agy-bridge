@@ -12,7 +12,7 @@ official Antigravity CLI (`agy`) using the user's existing Antigravity login.
 and its useful progress normally exists only in local Antigravity trajectory
 files. This bridge starts a detached worker, returns a durable `run_id`
 immediately, and exposes status, transcript, result, cancellation, continuation,
-and bounded parallel-goal tools over MCP.
+wait, and bounded parallel-goal tools over MCP.
 
 ## Status
 
@@ -32,6 +32,8 @@ when the CLI changes.
 
 - Starts long-running Antigravity work asynchronously.
 - Persists run state and logs across MCP server restarts.
+- Emits sparse durable run events and exposes `agy_wait` to avoid repeated
+  status polling.
 - Returns bounded, sanitized transcript events without private model reasoning.
 - Opens each run in a persistent `tmux` session.
 - Continues an exact Antigravity `conversation_id`.
@@ -225,6 +227,7 @@ Useful environment variables:
 | `agy_start` | Start an auto-visible foreground bridge-owned task and return a `run_id` |
 | `agy_interactive_start` | Start an experimental persistent foreground conversation session |
 | `agy_continue` | Continue an exact `conversation_id` |
+| `agy_wait` | Block until selected runs emit sparse lifecycle notifications |
 | `agy_status` | Read compact status or diagnostic paths |
 | `agy_transcript` | Read bounded progress events |
 | `agy_result` | Read the final semantic response |
@@ -245,7 +248,8 @@ Typical call flow:
 ```text
 agy_start
   -> run_id
-  -> agy_status / agy_transcript
+  -> agy_wait
+  -> agy_status / agy_transcript when a wait event needs inspection
   -> agy_result
 ```
 
@@ -357,13 +361,20 @@ Run state survives MCP server restarts under:
     agy.stdout.log
     agy.stderr.log
     terminal-progress.log
+    session-events.jsonl
+    notify.seq
   goals/<goal-id>/
     state.json
   servers/
     <pid>.json
 ```
 
-`agy_status(compact=false)` returns these diagnostic paths.
+`session-events.jsonl` stores sparse durable lifecycle events, and `notify.seq`
+stores the latest event id so `agy_wait` can wait on tiny marker files instead
+of repeatedly parsing transcripts. Old terminal run directories are swept by the
+janitor, preserving only durable state.
+
+`agy_status(compact=false)` returns diagnostic paths.
 `agy_transcript` returns bounded events by default; full event content is
 opt-in and length-capped. Private model reasoning fields are never exposed.
 

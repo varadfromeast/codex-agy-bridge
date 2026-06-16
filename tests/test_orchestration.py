@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from codex_agy_bridge import core, interactive_input, orchestration
+from codex_agy_bridge import core, interactive_input, orchestration, session_events
 from codex_agy_bridge._orchestrator import RunnerOrchestrator
 from codex_agy_bridge.execution import MockSession
 from codex_agy_bridge.process import ProcessManager
@@ -114,6 +114,41 @@ def test_sandbox_and_added_directories_participate_in_deduplication(
     assert first["additional_directories"] == [str(extra.resolve())]
 
 
+def test_create_run_returns_notification_metadata(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    process_manager = ConcurrentProcessManager()
+    process_manager.release_first.set()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        process_manager=process_manager,
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.AntigravityCli.capabilities",
+        lambda _self: type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )(),
+    )
+
+    state = orchestrator.create_run(
+        prompt="notify me",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+    )
+
+    assert state["notification_resource_uri"] == (
+        f"agy-run://{state['run_id']}/notifications"
+    )
+    assert state["wait_tool"] == "agy_wait"
+
+
 @pytest.mark.parametrize(
     "directories, message",
     [
@@ -187,10 +222,49 @@ def test_foreground_send_text_submits_directly_to_tmux(monkeypatch, tmp_path):
     assert not (state_root / "runs" / "run-1" / "interactive-input.json").exists()
     events = state_root / "runs" / "run-1" / "interactive-input-events.jsonl"
     assert '"delivery":"foreground_mcp_submit"' in events.read_text()
+    notification_events = session_events.read_events(state_root / "runs" / "run-1")
+    assert notification_events[-1]["kind"] == "mcp_input"
+    assert notification_events[-1]["delivery"] == "foreground_mcp_submit"
     assert result["sent"] is True
     assert result["execution_mode"] == "print"
     assert result["agent_mode"] == "task"
     assert result["delivery"] == "foreground_mcp_submit"
+
+
+def test_wait_returns_compact_event_updates(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "finished_at": "2026-06-16T00:00:00+00:00",
+    }
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    event = session_events.append_event(
+        run_dir,
+        "run_completed",
+        {"status": "completed"},
+    )
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+
+    result = orchestration.wait(
+        ["run-1"],
+        condition="any_terminal",
+        timeout_seconds=0,
+    )
+
+    assert result["matched"] is True
+    assert result["events"] == [event]
+    assert result["runs"]["run-1"]["status"] == "completed"
+
+
+def test_wait_rejects_empty_run_batch(tmp_path):
+    orch = RunnerOrchestrator(state_root=tmp_path / "state")
+
+    with pytest.raises(ValueError, match="run_ids"):
+        orch.wait([])
 
 
 def test_headless_run_rejects_terminal_text_injection(monkeypatch, tmp_path):
@@ -211,6 +285,61 @@ def test_headless_run_rejects_terminal_text_injection(monkeypatch, tmp_path):
         ValueError, match="only supported for foreground attachable Runs"
     ):
         orchestration.send_text("run-1", "must not inject")
+
+
+def test_open_terminal_emits_terminal_opened(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "session_label": "Agy Target",
+    }
+    opened = []
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: True)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "attach",
+        lambda session, *, check: opened.append((session, check)),
+    )
+
+    result = orchestration.open_terminal("run-1")
+
+    events = session_events.read_events(state_root / "runs" / "run-1")
+    assert opened == [("agy-target", True)]
+    assert result["opened"] is True
+    assert events[-1]["kind"] == "terminal_opened"
+
+
+def test_cancel_emits_cancel_requested(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run-1",
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "runner_pid": 123,
+            "tmux_session": "agy-target",
+            "execution_surface": "foreground",
+            "human_attachable": True,
+        },
+    )
+    session = MockSession(tmp_path / "state" / "runs" / "run-1")
+    session._alive = True
+
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        store=store,
+        session_factory=lambda _state, _run_dir: session,
+    )
+
+    orchestrator.cancel("run-1")
+
+    events = session_events.read_events(tmp_path / "state" / "runs" / "run-1")
+    assert events[-1]["kind"] == "cancel_requested"
 
 
 def test_foreground_task_run_accepts_text_injection(monkeypatch, tmp_path):

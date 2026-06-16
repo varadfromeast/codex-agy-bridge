@@ -7,7 +7,7 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime
 
-from codex_agy_bridge import interactive_input, terminal
+from codex_agy_bridge import interactive_input, session_events, terminal
 from codex_agy_bridge import runner as runtime
 from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.state import RunState
@@ -80,6 +80,14 @@ class RunSupervisor:
             command=command[:-1] + ["<prompt>"],
             launched_at=self.launched_at,
             started_at=self.state.get("started_at") or self.state.get("created_at"),
+        )
+        session_events.append_event(
+            self.directory,
+            "run_started",
+            {
+                "status": "running",
+                "tmux_session": self.session,
+            },
         )
         self._auto_open_terminal()
 
@@ -282,9 +290,26 @@ class RunSupervisor:
             error=error,
             finished_at=datetime.now(UTC).isoformat(),
         )
+        session_events.append_event(
+            self.directory,
+            _terminal_event_kind(status),
+            {
+                "status": status,
+                "return_code": return_code,
+                "error": error,
+            },
+        )
 
     def _return_code(self) -> int | None:
         return TmuxSession(
             self.directory,
             session_name=self.session,
         ).returncode
+
+
+def _terminal_event_kind(status: str) -> str:
+    if status == "completed":
+        return "run_completed"
+    if status == "canceled":
+        return "run_canceled"
+    return "run_failed"

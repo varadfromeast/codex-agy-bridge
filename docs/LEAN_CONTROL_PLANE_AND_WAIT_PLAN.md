@@ -61,6 +61,60 @@ Codex should not continuously chat with `agy`. It should send compact task
 packets, then read compact signals and decide whether to accept, redirect,
 continue, or cancel.
 
+## Current Implementation Status
+
+This plan is now partially implemented in the working tree.
+
+Implemented:
+
+- `agent_mode`, `execution_surface`, and `human_attachable` exist in
+  `RunState`.
+- `RunRequest.prepare()` validates those fields.
+- `orchestration.create_run()` and `RunnerOrchestrator.create_run()` default to
+  `agent_mode="task"`, `execution_surface="foreground"`, and
+  `human_attachable=True`.
+- `agy_start()` now describes foreground task behavior.
+- foreground Runs use `--prompt-interactive` so the tmux pane runs the visible
+  `agy` CLI.
+- `terminal.launch()` accepts `execution_surface` and skips the old log-tail
+  wrapper for foreground launches.
+- `task_packet.py` exists and formats task Runs with a completion marker.
+- task Runs keep a completion marker; conversation Runs still use an empty
+  marker.
+- `RunSupervisor` can complete marker-bearing Runs and stop tmux.
+- compact status includes `agent_mode`, `execution_surface`, and
+  `human_attachable`.
+
+Not implemented:
+
+- `agy_wait`.
+- `session-events.jsonl`.
+- `notify.seq`.
+- transcript index/search.
+- MCP input tags.
+- human/MCP/unknown transcript input reconciliation.
+- typed event APIs such as `agy_events`, `agy_search`, and
+  `agy_human_inputs`.
+
+Review findings to address before calling the control-plane slice complete:
+
+1. `agy_target_send_text` rejects foreground task Runs because
+   `RunnerOrchestrator.send_text()` only allows
+   `execution_mode="interactive"` plus `agent_mode="conversation"`.
+   This conflicts with the intended Codex control-plane model where Codex sends
+   lean control messages to foreground task workers.
+2. `open_terminal()` does not check `human_attachable`. If headless or
+   non-human-attachable Runs are exposed later, the bridge should either reject
+   terminal open requests for those Runs or explicitly document that
+   `human_attachable` is metadata only.
+3. MCP server instructions still tell clients to poll `agy_status` and
+   `agy_goal_status`. That is accurate today, but it should be updated once
+   `agy_wait` exists.
+4. `task_packet.py` currently hardcodes expected output as "changed files and
+   verification." That is too code-edit oriented for read-only or research
+   tasks; the packet should eventually accept expected-output hints from the
+   caller or use more neutral default language.
+
 ## Track A: Foreground `agy_start` Control Model
 
 ### 1. Split Overloaded Execution Concepts
@@ -81,6 +135,8 @@ agent_mode: task | conversation
 execution_surface: foreground | headless
 human_attachable: bool
 ```
+
+Status: implemented.
 
 Initial mapping:
 
@@ -111,6 +167,8 @@ Files:
 
 `agy_start()` should create a real tmux-backed foreground `agy` CLI session.
 
+Status: mostly implemented.
+
 The human should be able to attach through:
 
 ```text
@@ -127,6 +185,12 @@ Keep headless/background behavior as compatibility, either through an explicit
 parameter or a separate compatibility tool. Do not delete the old path until
 foreground task mode is live-tested.
 
+Remaining:
+
+- expose or document the headless compatibility path
+- decide whether `open_terminal` should enforce `human_attachable`
+- live-test `agy_start()` foreground task completion after server reload
+
 Files:
 
 - `src/codex_agy_bridge/server.py`
@@ -140,6 +204,8 @@ Change the execution session interface so terminal behavior is explicit:
 ```python
 terminal.launch(..., execution_surface="foreground")
 ```
+
+Status: implemented.
 
 Foreground behavior:
 
@@ -165,6 +231,8 @@ Files:
 Centralize initial worker prompts so Codex sends compact, structured task
 packets rather than long free-form conversations.
 
+Status: implemented, but default copy needs refinement.
+
 New file:
 
 ```text
@@ -189,9 +257,17 @@ Rules:
 - Tell `agy` to ask only if blocked.
 - Do not expose bridge implementation details unless necessary.
 
+Remaining:
+
+- make expected output configurable or neutral
+- ensure the packet tells `agy` to ask only if blocked
+- add tests for exact packet language that matters to completion behavior
+
 ### 5. Keep MCP-Owned Completion
 
 The supervisor owns lifecycle completion.
+
+Status: implemented for marker-bearing task Runs.
 
 When the transcript contains the completion marker:
 
@@ -210,11 +286,48 @@ Important compatibility rule:
 - Old interactive Runs with empty `completion_marker` must not auto-complete on
   arbitrary responses.
 
+Remaining:
+
+- ensure foreground `agy_start()` live Runs created after server reload actually
+  complete and close tmux on marker
+- emit terminal session events from completion once `session-events.jsonl`
+  exists
+
+### 6. Allow Lean MCP Control Messages To Task Runs
+
+Status: not implemented; current behavior rejects this.
+
+The control-plane model requires Codex to send small control packets to
+foreground task Runs, for example:
+
+```text
+continue
+redirect
+acceptance_failed
+cancel
+complete
+```
+
+Current `agy_target_send_text` is limited to conversation Runs. Change it so:
+
+- foreground task Runs allow direct tagged MCP control messages
+- conversation Runs keep queued prompt delivery semantics
+- headless Runs reject terminal text injection
+- all MCP-originated input is recorded before delivery
+
+Files:
+
+- `src/codex_agy_bridge/_orchestrator.py`
+- `src/codex_agy_bridge/interactive_input.py`
+- `tests/test_orchestration.py`
+
 ## Track B: Event Log And Transcript Read Model
 
 ### 1. Add `session-events.jsonl`
 
 Create a normalized append-only event stream for every Run.
+
+Status: not implemented.
 
 Path:
 
@@ -257,6 +370,10 @@ read_events(run_dir, after_event_id=None, limit=100) -> list[dict]
 
 Before MCP sends text into tmux, write a structured event:
 
+Status: not implemented. Current code records MCP input in
+`interactive-input-events.jsonl`, but it does not wrap injected text with a
+correlation tag and it only applies to conversation Runs.
+
 ```json
 {
   "event_id": "000000000042",
@@ -289,6 +406,8 @@ Files:
 
 Current public transcript reads go through `core.read_steps()`, which rereads
 and reparses the complete `transcript.jsonl` every call.
+
+Status: not implemented.
 
 Keep the raw transcript JSONL as the source of truth, but add an indexed read
 model for MCP queries.
@@ -341,6 +460,9 @@ incremental ingestion: inode, file head, byte offset, pending partial line.
 
 `agy_transcript` should read compact records from the index when available.
 
+Status: not implemented. `agy_transcript` still uses the raw transcript helper
+path through `core.compact_steps()`.
+
 Fallback behavior:
 
 - if no index exists, read raw transcript JSONL
@@ -357,6 +479,8 @@ Files:
 ### 5. Add Lean MCP Query Tools
 
 Add compact session tools:
+
+Status: not implemented.
 
 ```text
 agy_events(run_id, after_event_id=None, limit=50)
@@ -387,6 +511,8 @@ That burns turns and tokens when many Runs are active.
 ### Solution
 
 Add a blocking MCP tool:
+
+Status: not implemented.
 
 ```python
 agy_wait(
@@ -567,4 +693,3 @@ This directly solves Codex polling.
    reliably?
 5. Should `watchfiles` be an optional extra dependency later, e.g.
    `codex-agy-bridge[watch]`?
-
