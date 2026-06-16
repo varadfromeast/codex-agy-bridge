@@ -156,7 +156,7 @@ def test_added_directories_are_validated(
         )
 
 
-def test_interactive_send_text_queues_submitted_prompt(monkeypatch, tmp_path):
+def test_foreground_send_text_submits_directly_to_tmux(monkeypatch, tmp_path):
     sent = []
     state_root = isolate_state_root(monkeypatch, tmp_path)
 
@@ -165,7 +165,10 @@ def test_interactive_send_text_queues_submitted_prompt(monkeypatch, tmp_path):
         "run_id": "run-1",
         "status": "running",
         "tmux_session": "agy-target",
-        "execution_mode": "interactive",
+        "execution_mode": "print",
+        "agent_mode": "task",
+        "execution_surface": "foreground",
+        "human_attachable": True,
     }
 
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
@@ -180,14 +183,17 @@ def test_interactive_send_text_queues_submitted_prompt(monkeypatch, tmp_path):
 
     result = orchestration.send_text("run-1", "yes")
 
-    assert sent == []
-    assert (state_root / "runs" / "run-1" / "interactive-input.json").exists()
+    assert sent == [("agy-target", "yes", True)]
+    assert not (state_root / "runs" / "run-1" / "interactive-input.json").exists()
+    events = state_root / "runs" / "run-1" / "interactive-input-events.jsonl"
+    assert '"delivery":"foreground_mcp_submit"' in events.read_text()
     assert result["sent"] is True
-    assert result["execution_mode"] == "interactive"
-    assert result["delivery"] == "queued_interactive_prompt"
+    assert result["execution_mode"] == "print"
+    assert result["agent_mode"] == "task"
+    assert result["delivery"] == "foreground_mcp_submit"
 
 
-def test_print_run_rejects_terminal_text_injection(monkeypatch, tmp_path):
+def test_headless_run_rejects_terminal_text_injection(monkeypatch, tmp_path):
     state_root = isolate_state_root(monkeypatch, tmp_path)
     mem_store = MemoryRunStore()
     mem_store.runs["run-1"] = {
@@ -195,12 +201,45 @@ def test_print_run_rejects_terminal_text_injection(monkeypatch, tmp_path):
         "status": "running",
         "tmux_session": "agy-target",
         "execution_mode": "print",
+        "execution_surface": "headless",
+        "human_attachable": False,
     }
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
     monkeypatch.setattr(orchestration, "_orchestrator", orch)
 
-    with pytest.raises(ValueError, match="only supported for interactive Runs"):
+    with pytest.raises(
+        ValueError, match="only supported for foreground attachable Runs"
+    ):
         orchestration.send_text("run-1", "must not inject")
+
+
+def test_foreground_task_run_accepts_text_injection(monkeypatch, tmp_path):
+    sent = []
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "print",
+        "agent_mode": "task",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: True)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "send_text",
+        lambda session, text, *, enter=True: sent.append((session, text, enter)),
+    )
+
+    result = orchestration.send_text("run-1", "steer the task")
+
+    assert sent == [("agy-target", "steer the task", True)]
+    assert result["sent"] is True
+    assert result["delivery"] == "foreground_mcp_submit"
 
 
 def test_interactive_status_exposes_experimental_queue_state(tmp_path):
@@ -215,6 +254,9 @@ def test_interactive_status_exposes_experimental_queue_state(tmp_path):
             "runner_pid": 42,
             "tmux_session": "agy-target",
             "execution_mode": "interactive",
+            "agent_mode": "conversation",
+            "execution_surface": "foreground",
+            "human_attachable": True,
             "interactive_prompt_in_flight": True,
         },
     )
@@ -228,6 +270,11 @@ def test_interactive_status_exposes_experimental_queue_state(tmp_path):
 
     status = orchestrator.status("run-1")
 
+    assert status["agent_mode"] == "conversation"
+    assert status["execution_surface"] == "foreground"
+    assert status["human_attachable"] is True
+    assert status["can_send_text"] is True
+    assert status["send_text_mode"] == "direct"
     assert status["interactive_queue"] == {
         "experimental": True,
         "queued_prompts": 2,
@@ -244,6 +291,9 @@ def test_interactive_unsubmitted_text_uses_run_tmux_session(monkeypatch, tmp_pat
         "status": "running",
         "tmux_session": "agy-target",
         "execution_mode": "interactive",
+        "agent_mode": "conversation",
+        "execution_surface": "foreground",
+        "human_attachable": True,
     }
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
     monkeypatch.setattr(orchestration, "_orchestrator", orch)
@@ -271,13 +321,21 @@ def test_interactive_submitted_text_rejects_dead_session(monkeypatch, tmp_path):
         "status": "running",
         "tmux_session": "agy-target",
         "execution_mode": "interactive",
+        "agent_mode": "conversation",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+        "conversation_id": "conversation-1",
     }
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
     monkeypatch.setattr(orchestration, "_orchestrator", orch)
     monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: False)
 
-    with pytest.raises(ValueError, match="not running"):
-        orchestration.send_text("run-1", "must not queue")
+    result = orchestration.send_text("run-1", "must not queue")
+
+    assert result["sent"] is False
+    assert result["status"] == "running"
+    assert result["conversation_id"] == "conversation-1"
+    assert result["error"] == "tmux session is not running: agy-target"
 
 
 def test_open_terminal_rejects_stopped_tmux_session(monkeypatch, tmp_path):

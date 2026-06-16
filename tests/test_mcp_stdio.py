@@ -140,7 +140,7 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
         tool for tool in tools.tools if tool.name == "agy_interactive_start"
     )
     assert "EXPERIMENTAL" in interactive.description
-    assert "may deadlock" in interactive.description
+    assert "send subsequent input directly" in interactive.description
     assert "should not be used often" in interactive.description
     goal = next(tool for tool in tools.tools if tool.name == "agy_goal_create")
     assert "MCP scheduler" in goal.description

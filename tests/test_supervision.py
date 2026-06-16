@@ -265,7 +265,9 @@ def test_interactive_supervisor_ignores_hard_timeout_while_session_is_alive(
     assert stopped == []
 
 
-def test_supervisor_launch_does_not_open_terminal(monkeypatch, tmp_path):
+def test_supervisor_launch_auto_opens_foreground_attachable_terminal(
+    monkeypatch, tmp_path
+):
     state = {
         "run_id": "run-1",
         "workspace": str(tmp_path),
@@ -273,6 +275,8 @@ def test_supervisor_launch_does_not_open_terminal(monkeypatch, tmp_path):
         "completion_marker": "DONE_MARKER",
         "prompt": "do work",
         "tmux_session": "agy-run-1",
+        "execution_surface": "foreground",
+        "human_attachable": True,
     }
     attached = []
     monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
@@ -282,12 +286,77 @@ def test_supervisor_launch_does_not_open_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "update_state", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "codex_agy_bridge.terminal.attach",
-        lambda session: attached.append(session),
+        lambda session, *, check=False: attached.append((session, check)),
+    )
+
+    RunSupervisor("run-1")._launch()
+
+    assert attached == [("agy-run-1", False)]
+
+
+def test_supervisor_launch_does_not_open_headless_terminal(monkeypatch, tmp_path):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+        "execution_surface": "headless",
+        "human_attachable": False,
+    }
+    attached = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "build_command", lambda _state: ["/bin/true"])
+    monkeypatch.setattr(runner, "launch_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "update_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "codex_agy_bridge.terminal.attach",
+        lambda session, *, check=False: attached.append((session, check)),
     )
 
     RunSupervisor("run-1")._launch()
 
     assert attached == []
+
+
+def test_supervisor_launch_survives_terminal_auto_open_failure(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+    }
+    updates = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "build_command", lambda _state: ["/bin/true"])
+    monkeypatch.setattr(runner, "launch_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.terminal.attach",
+        lambda _session, *, check=False: (_ for _ in ()).throw(
+            RuntimeError("osascript failed")
+        ),
+    )
+
+    RunSupervisor("run-1")._launch()
+
+    assert updates[-1]["status"] == "running"
+    assert "Terminal auto-open failed: osascript failed" in (
+        tmp_path / "terminal-progress.log"
+    ).read_text()
 
 
 def test_supervisor_backs_off_conversation_discovery(monkeypatch, tmp_path):

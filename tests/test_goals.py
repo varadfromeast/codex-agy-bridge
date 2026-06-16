@@ -5,7 +5,9 @@ import pytest
 from codex_agy_bridge import core, server
 
 
-def test_goal_parallel_limit_accepts_four_and_rejects_five(tmp_path, monkeypatch):
+def test_goal_parallel_limit_accepts_fifty_and_rejects_fifty_one(
+    tmp_path, monkeypatch
+):
     state_root = tmp_path / "state"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -13,19 +15,19 @@ def test_goal_parallel_limit_accepts_four_and_rejects_five(tmp_path, monkeypatch
     monkeypatch.setattr(server, "STATE_ROOT", state_root)
 
     goal = server.agy_goal_create(
-        objective="Run four targets",
+        objective="Run fifty targets",
         workspace=str(workspace),
-        max_parallel=4,
+        max_parallel=50,
     )
 
-    assert goal["max_parallel"] == 4
-    with pytest.raises(ValueError, match="between 1 and 4"):
+    assert goal["max_parallel"] == 50
+    with pytest.raises(ValueError, match="between 1 and 50"):
         server.agy_goal_create(
-            objective="Run five targets",
+            objective="Run fifty-one targets",
             workspace=str(workspace),
-            max_parallel=5,
+            max_parallel=51,
         )
-    with pytest.raises(ValueError, match="integer between 1 and 4"):
+    with pytest.raises(ValueError, match="integer between 1 and 50"):
         server.agy_goal_create(
             objective="Reject boolean parallelism",
             workspace=str(workspace),

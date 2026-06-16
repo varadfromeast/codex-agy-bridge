@@ -52,6 +52,9 @@ def test_orchestrator_uses_injected_execution_session(tmp_path: Path):
         "prompt": "hello",
         "tmux_session": "agy-test-session",
         "execution_mode": "interactive",
+        "agent_mode": "conversation",
+        "execution_surface": "foreground",
+        "human_attachable": True,
     }
     store.save_run("run-mock-123", run_state)
 

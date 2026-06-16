@@ -228,7 +228,7 @@ async def test_v1_06_interactive_queue_survives_mcp_restart(tmp_path):
                 "agy_target_send_text",
                 {"run_id": run_id, "text": text},
             )
-            assert accepted["delivery"] == "queued_interactive_prompt"
+            assert accepted["delivery"] == "foreground_mcp_submit"
 
     async with _live_session(state_root) as session:
         try:
@@ -246,7 +246,7 @@ async def test_v1_06_interactive_queue_survives_mcp_restart(tmp_path):
                 "agy_target_send_text",
                 {"run_id": run_id, "text": appended},
             )
-            assert accepted["delivery"] == "queued_interactive_prompt"
+            assert accepted["delivery"] == "foreground_mcp_submit"
             await _wait_for_transcript_tokens(
                 session,
                 run_id,
@@ -356,11 +356,13 @@ async def test_v1_09_cancel_with_pending_interactive_queue(tmp_path):
                 },
             )
             assert after["steps"] == before["steps"]
-            rejected = await session.call_tool(
+            rejected = await _call(
+                session,
                 "agy_target_send_text",
                 {"run_id": run_id, "text": f"V1_CANCEL_{nonce}_REVIVE"},
             )
-            assert rejected.isError
+            assert rejected["sent"] is False
+            assert rejected["status"] == "canceled"
             final = await _call(
                 session,
                 "agy_status",

@@ -33,7 +33,7 @@ from codex_agy_bridge.state import (
 from codex_agy_bridge.store import DiskRunStore, RunStore
 
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
-DEFAULT_MAX_PARALLEL = 4
+DEFAULT_MAX_PARALLEL = 50
 JANITOR_INTERVAL_SECONDS = 60
 RESULT_PREVIEW_BYTES = 4096
 RESULT_READ_MAX_BYTES = 262_144
@@ -479,9 +479,22 @@ class RunnerOrchestrator:
             conversation_id = state.get("conversation_id")
             latest = core.latest_step(conversation_id) if conversation_id else None
             execution_mode = state.get("execution_mode", "print")
+            agent_mode = state.get("agent_mode", "task")
+            execution_surface = state.get("execution_surface", "headless")
+            human_attachable = state.get("human_attachable", False)
             session_state = None
             interactive_queue = None
-            if execution_mode == "interactive" and state["status"] in ACTIVE_STATUSES:
+            can_send_text = (
+                state["status"] in ACTIVE_STATUSES
+                and execution_surface == "foreground"
+                and human_attachable
+                and bool(state.get("tmux_session"))
+            )
+            if (
+                execution_mode == "interactive"
+                and agent_mode == "conversation"
+                and state["status"] in ACTIVE_STATUSES
+            ):
                 session_state = (
                     "awaiting_input"
                     if latest
@@ -505,6 +518,11 @@ class RunnerOrchestrator:
                 "run_id": run_id,
                 "status": state["status"],
                 "execution_mode": execution_mode,
+                "agent_mode": agent_mode,
+                "execution_surface": execution_surface,
+                "human_attachable": human_attachable,
+                "can_send_text": can_send_text,
+                "send_text_mode": "direct" if can_send_text else None,
                 "session_state": session_state,
                 "conversation_id": conversation_id,
                 "error": state.get("error"),
@@ -904,35 +922,74 @@ class RunnerOrchestrator:
             Dict indicating transmission status.
 
         Raises:
-            ValueError: If the Run is not interactive or tmux is unavailable.
+            ValueError: If the run is not foreground attachable.
         """
         state = self.load_state(run_id)
-        if state.get("execution_mode") != "interactive":
-            raise ValueError("text input is only supported for interactive Runs")
-        if not state.get("tmux_session"):
-            raise ValueError("run does not have a tmux session")
+        if (
+            state.get("execution_surface") != "foreground"
+            or not state.get("human_attachable")
+        ):
+            raise ValueError(
+                "text input is only supported for foreground attachable Runs"
+            )
+        if (
+            not state.get("tmux_session")
+            or state.get("status") not in ACTIVE_STATUSES
+        ):
+            return self._send_text_not_delivered(
+                state,
+                error="run does not have an active tmux session",
+            )
         session = self.get_session(state)
         if not session.is_alive():
-            raise ValueError(
-                f"tmux session is not running: {state.get('tmux_session')}"
+            return self._send_text_not_delivered(
+                state,
+                error=f"tmux session is not running: {state.get('tmux_session')}",
             )
-        queued = enter and bool(text)
-        delivery = "queued_interactive_prompt" if queued else "interactive_keystrokes"
+        delivery = (
+            "foreground_mcp_submit"
+            if enter and bool(text)
+            else "foreground_mcp_keystrokes"
+        )
         interactive_input.record_mcp_input(
             self.run_dir(run_id),
             text=text,
             enter=enter,
             delivery=delivery,
         )
-        if queued:
-            interactive_input.enqueue(self.run_dir(run_id), text)
-        else:
+        try:
             session.send_input(text, enter=enter)
+        except ValueError as error:
+            return self._send_text_not_delivered(state, error=str(error))
         return {
             "run_id": run_id,
             "tmux_session": state.get("tmux_session"),
             "sent": True,
             "enter": enter,
             "execution_mode": state.get("execution_mode", "print"),
+            "agent_mode": state.get("agent_mode", "task"),
+            "execution_surface": state.get("execution_surface", "headless"),
             "delivery": delivery,
+        }
+
+    def _send_text_not_delivered(
+        self,
+        state: RunState,
+        *,
+        error: str,
+    ) -> dict[str, Any]:
+        conversation_id = state.get("conversation_id")
+        latest_step = core.latest_step(conversation_id) if conversation_id else None
+        return {
+            "run_id": state["run_id"],
+            "tmux_session": state.get("tmux_session"),
+            "sent": False,
+            "status": state.get("status"),
+            "conversation_id": conversation_id,
+            "latest_step": latest_step,
+            "error": error,
+            "execution_mode": state.get("execution_mode", "print"),
+            "agent_mode": state.get("agent_mode", "task"),
+            "execution_surface": state.get("execution_surface", "headless"),
+            "human_attachable": state.get("human_attachable", False),
         }

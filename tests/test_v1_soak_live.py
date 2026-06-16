@@ -218,7 +218,7 @@ async def test_v1_18_large_interactive_queue(tmp_path):
             report["run_id"] = run_id
             report["conversation_id"] = ready["conversation_id"]
 
-            enqueue_started = time.monotonic()
+            send_started = time.monotonic()
             for token in acknowledgements:
                 accepted = await _call(
                     session,
@@ -228,8 +228,8 @@ async def test_v1_18_large_interactive_queue(tmp_path):
                         "text": f"Reply exactly {token}.",
                     },
                 )
-                assert accepted["delivery"] == "queued_interactive_prompt"
-            report["enqueue_seconds"] = time.monotonic() - enqueue_started
+                assert accepted["delivery"] == "foreground_mcp_submit"
+            report["send_seconds"] = time.monotonic() - send_started
 
             queued = await _call(
                 session,

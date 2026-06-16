@@ -43,8 +43,8 @@ when the CLI changes.
 - Forwards CLI `--sandbox` and up to 16 `--add-dir` policy hints without
   claiming filesystem containment.
 - Discovers models, plugins, capabilities, changelog, and bridge diagnostics.
-- Starts experimental persistent `--prompt-interactive` sessions for
-  occasional conversational input.
+- Starts foreground task sessions in tmux and experimental persistent
+  `--prompt-interactive` sessions for occasional conversational input.
 
 ## Install
 
@@ -215,15 +215,15 @@ Useful environment variables:
 | `AGY_CMD` | `agy` on `PATH` | Exact Antigravity executable |
 | `AGY_BRIDGE_STATE_DIR` | `~/.local/state/codex-agy-bridge` | Durable run and goal state |
 | `AGY_BRIDGE_AGY_ROOT` | `~/.gemini/antigravity-cli` | Antigravity conversations and trajectories |
-| `AGY_BRIDGE_MAX_PARALLEL` | `4` | Global concurrent-run limit |
+| `AGY_BRIDGE_MAX_PARALLEL` | `50` | Global concurrent-run limit |
 | `AGY_BRIDGE_COMPLETION_STABILITY_SECONDS` | `150` | Time a final marker must remain stable |
 
 ## MCP Tools
 
 | Tool | Purpose |
 | --- | --- |
-| `agy_start` | Start a new asynchronous conversation and return a `run_id` |
-| `agy_interactive_start` | Start an experimental transcript-gated interactive session |
+| `agy_start` | Start an auto-visible foreground bridge-owned task and return a `run_id` |
+| `agy_interactive_start` | Start an experimental persistent foreground conversation session |
 | `agy_continue` | Continue an exact `conversation_id` |
 | `agy_status` | Read compact status or diagnostic paths |
 | `agy_transcript` | Read bounded progress events |
@@ -238,7 +238,7 @@ Useful environment variables:
 | `agy_goal_target_start` | Start one independent scheduler target |
 | `agy_goal_status` | Aggregate bridge scheduler target status |
 | `agy_target_open_terminal` | Reattach Terminal.app to an existing run |
-| `agy_target_send_text` | Queue or send input to an interactive Run only |
+| `agy_target_send_text` | Send input directly to a live foreground Run |
 
 Typical call flow:
 

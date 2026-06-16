@@ -7,7 +7,7 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime
 
-from codex_agy_bridge import interactive_input
+from codex_agy_bridge import interactive_input, terminal
 from codex_agy_bridge import runner as runtime
 from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.state import RunState
@@ -81,6 +81,23 @@ class RunSupervisor:
             launched_at=self.launched_at,
             started_at=self.state.get("started_at") or self.state.get("created_at"),
         )
+        self._auto_open_terminal()
+
+    def _auto_open_terminal(self) -> None:
+        if (
+            self.state.get("execution_surface") != "foreground"
+            or not self.state.get("human_attachable")
+            or not self.session
+        ):
+            return
+        try:
+            terminal.attach(self.session, check=False)
+        except Exception as error:
+            with (
+                suppress(OSError),
+                self.progress_path.open("a", encoding="utf-8") as handle,
+            ):
+                handle.write(f"Terminal auto-open failed: {error}\n")
 
     def _monitor_until_exit(self) -> int | None:
         deadline = time.monotonic() + int(self.state["timeout_seconds"]) + 30

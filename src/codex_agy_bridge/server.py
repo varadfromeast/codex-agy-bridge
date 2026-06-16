@@ -30,7 +30,8 @@ class StrictFastMCP(FastMCP):
 mcp = StrictFastMCP(
     "codex-agy-bridge",
     instructions=(
-        "Use agy_start for a new Antigravity task and retain its run_id. "
+        "Use agy_start for a new foreground Antigravity task and retain its "
+        "run_id. "
         "Poll agy_status and inspect incremental work with agy_transcript. "
         "Use agy_result only after terminal status. Use agy_continue with the "
         "exact conversation_id for follow-up work. For bounded parallel work, "
@@ -40,7 +41,9 @@ mcp = StrictFastMCP(
         "Use agy_cancel to stop an active run. Targets support "
         "agy_target_open_terminal and agy_target_send_text. Use "
         "agy_interactive_start sparingly when subsequent text must be consumed "
-        "as conversation input; interactive queue delivery is experimental. "
+        "as open-ended conversation input. agy_target_send_text sends input "
+        "directly to live foreground tmux panes and returns sent=false with "
+        "status context after the pane closes. "
         "Use agy_models and agy_doctor for discovery. "
         "Antigravity is agentic and the workspace is not a security boundary."
     ),
@@ -88,11 +91,13 @@ def agy_start(
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Start a new asynchronous Antigravity conversation.
+    """Start a new asynchronous Antigravity task.
 
-    The call returns immediately with a run_id. Antigravity print mode is
-    agentic; enabling dangerously_skip_permissions permits unattended commands
-    and file edits with the current user's privileges. sandbox and
+    The call returns immediately with a run_id. Antigravity runs as a visible
+    foreground CLI in tmux, and foreground human-attachable runs auto-open in
+    Terminal.app while the bridge owns lifecycle, completion detection, and
+    result cleanup. Enabling dangerously_skip_permissions permits unattended
+    commands and file edits with the current user's privileges. sandbox and
     additional_directories are CLI policy hints forwarded to Antigravity, not
     filesystem containment or a bridge security boundary.
     """
@@ -125,13 +130,11 @@ def agy_interactive_start(
 ) -> dict[str, Any]:
     """EXPERIMENTAL: start a persistent interactive Antigravity session.
 
-    This should not be used often. The bridge queues input and releases one
-    prompt after detecting a completed planner response. This depends on
-    transcript semantics and may deadlock if agy changes response event types.
-    Completed responses do not terminate this session. Use agy_target_send_text
-    for subsequent prompts and agy_cancel to close it. sandbox and
-    additional_directories are CLI policy hints forwarded to Antigravity, not
-    filesystem containment or a bridge security boundary.
+    This should not be used often. The bridge starts a foreground conversation
+    session that stays alive after completed responses. Use agy_target_send_text
+    to send subsequent input directly to the visible tmux pane and agy_cancel to
+    close it. sandbox and additional_directories are CLI policy hints forwarded
+    to Antigravity, not filesystem containment or a bridge security boundary.
     """
     return public_state(
         cast(
@@ -349,11 +352,11 @@ def agy_target_send_text(
     text: str,
     enter: bool = True,
 ) -> dict[str, Any]:
-    """Send input to an experimental interactive Run only.
+    """Send input directly to a live foreground Run.
 
-    Submitted prompts are durably queued and released one at a time after the
-    bridge observes a completed planner response. This transcript-dependent
-    protocol may deadlock if agy changes response event types.
+    Input is recorded as MCP-originated and delivered to the run's tmux pane.
+    If the foreground session has already closed, the response reports
+    sent=false along with the latest known run status and transcript step.
     """
     return orchestration.send_text(run_id, text, enter=enter)
 
