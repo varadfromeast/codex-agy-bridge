@@ -382,6 +382,20 @@ class ConcurrentProcessManager(ProcessManager):
         pass
 
 
+class DeadProcessManager(ProcessManager):
+    def spawn(self, args, cwd, stdout, stderr):
+        raise AssertionError("spawn is not expected")
+
+    def is_alive(self, pid):
+        return False
+
+    def killpg(self, gpid, sig):
+        pass
+
+    def kill(self, pid, sig):
+        pass
+
+
 def test_concurrent_identical_starts_reserve_queued_run(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -470,6 +484,34 @@ def test_status_fails_run_and_stops_session_when_supervisor_exits(tmp_path):
 
     assert result["status"] == "failed"
     assert result["error"] == "runner exited before recording a terminal status"
+    assert session.is_alive() is False
+
+
+def test_status_marks_cancel_requested_dead_runner_as_canceled(tmp_path):
+    store = MemoryRunStore()
+    session = MockSession(tmp_path / "run")
+    session.start("run", ["agy"], tmp_path)
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "cancel_requested",
+            "runner_pid": 101,
+            "agy_pid": None,
+            "tmux_session": "agy-run",
+        },
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path,
+        store=store,
+        process_manager=DeadProcessManager(),
+        session_factory=lambda _state, _run_dir: session,
+    )
+
+    result = orchestrator.status("run")
+
+    assert result["status"] == "canceled"
+    assert result["error"] is None
     assert session.is_alive() is False
 
 

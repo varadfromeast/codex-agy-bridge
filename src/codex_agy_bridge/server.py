@@ -21,6 +21,8 @@ class StrictFastMCP(FastMCP):
         super().add_tool(fn, *args, **kwargs)
         name = kwargs.get("name") or fn.__name__
         tool = self._tool_manager.get_tool(name)
+        if tool is None:
+            raise RuntimeError(f"FastMCP did not register tool: {name}")
         tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
         tool.fn_metadata.arg_model.model_rebuild(force=True)
 

@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 from filelock import FileLock
 
@@ -40,6 +40,11 @@ STATE_ROOT = Path(
 ).expanduser()
 LAST_CONVERSATIONS = AGY_ROOT / "cache" / "last_conversations.json"
 BRAIN_DIR = AGY_ROOT / "brain"
+
+JSONValue: TypeAlias = (
+    "Mapping[str, Any] | list[Any] | str | int | float | bool | None"
+)
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -77,7 +82,7 @@ def state_path(run_id: str, state_root: Path | None = None) -> Path:
     return run_dir(run_id, state_root) / "state.json"
 
 
-def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
+def atomic_write_json(path: Path, value: JSONValue) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

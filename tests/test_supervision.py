@@ -71,6 +71,49 @@ def test_supervisor_classifies_nonzero_cli_exit(monkeypatch, tmp_path):
     assert updates[-1]["return_code"] == 17
     assert updates[-1]["error"] == "agy exited with code 17 without a response"
 
+def test_supervisor_classifies_nonzero_exit_with_partial_response_as_failed(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "requested_conversation_id": "conversation-1",
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+    }
+    updates = []
+    (tmp_path / "agy.exit-code").write_text("137\n", encoding="utf-8")
+
+    class FakeHarvester:
+        latest_response = "partial planner response"
+
+        def __init__(self, _conversation_id, _path):
+            pass
+
+        def poll(self):
+            return []
+
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.TranscriptHarvester",
+        FakeHarvester,
+    )
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+
+    result = RunSupervisor("run-1")._finish_after_exit()
+
+    assert result == 1
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["result"] == "partial planner response"
+    assert updates[-1]["return_code"] == 137
+    assert updates[-1]["error"] == "agy exited with code 137 after a partial response"
+
 
 def test_supervisor_resets_completion_stability_for_changed_response(
     monkeypatch, tmp_path
@@ -86,10 +129,26 @@ def test_supervisor_resets_completion_stability_for_changed_response(
     monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
     supervisor = RunSupervisor("run-1")
 
-    assert not supervisor._completion_is_stable("first DONE_MARKER")
+    assert supervisor._completion_is_stable("first DONE_MARKER")
     first_seen_at = supervisor.marker_seen_at
-    assert not supervisor._completion_is_stable("changed DONE_MARKER")
+    assert supervisor._completion_is_stable("changed DONE_MARKER")
     assert supervisor.marker_seen_at != first_seen_at
+
+def test_supervisor_treats_explicit_completion_marker_as_stable(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+    }
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert supervisor._completion_is_stable("final response DONE_MARKER")
 
 
 def test_interactive_supervisor_does_not_finish_on_completion_marker(

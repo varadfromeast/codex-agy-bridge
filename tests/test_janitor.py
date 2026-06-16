@@ -51,6 +51,37 @@ def test_janitor_cleans_up_orphans(tmp_path, monkeypatch):
     assert final_state["status"] == "failed"
     assert "process died" in final_state["error"]
 
+def test_janitor_stops_tmux_session_when_supervisor_is_dead(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_root = tmp_path / "state"
+    pm = MockProcessManager()
+    orch = RunnerOrchestrator(state_root=state_root, process_manager=pm)
+    stopped = []
+
+    monkeypatch.setenv("AGY_CMD", "/dummy/agy")
+    monkeypatch.setattr(
+        "codex_agy_bridge.janitor.TmuxSession.kill",
+        lambda self: stopped.append(self.session_name),
+    )
+
+    run_state = orch.create_run(
+        prompt="Orphan tmux test",
+        workspace=str(workspace),
+        timeout_seconds=900,
+        conversation_id=None,
+    )
+    run_id = run_state["run_id"]
+    pm.alive_pids.clear()
+    two_min_ago = datetime.now(UTC) - dt.timedelta(minutes=2)
+    orch.update_state(run_id, created_at=two_min_ago.isoformat())
+
+    orch.run_janitor()
+
+    assert stopped == [run_state["tmux_session"]]
+    final_state = orch.load_state(run_id)
+    assert final_state["status"] == "failed"
+
 
 def test_janitor_sweeps_old_logs(tmp_path):
     state_root = tmp_path / "state"

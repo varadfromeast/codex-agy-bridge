@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.process import ProcessManager
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
@@ -101,6 +102,12 @@ class RunJanitor:
                         self.process_manager.is_alive(agy_pid) if agy_pid else False
                     )
                     if not runner_alive and not agy_alive:
+                        tmux_session = state.get("tmux_session")
+                        if tmux_session:
+                            TmuxSession(
+                                self.state_root / "runs" / run_id,
+                                session_name=tmux_session,
+                            ).kill()
                         self.update_state(
                             run_id,
                             status="failed",

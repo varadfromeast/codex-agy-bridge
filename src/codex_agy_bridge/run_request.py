@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from codex_agy_bridge import core
 from codex_agy_bridge.exceptions import WorkspaceAccessError
 from codex_agy_bridge.state import ExecutionMode, RunState
 
@@ -62,8 +63,15 @@ class RunRequest:
             raise ValueError(f"prompt exceeds {MAX_PROMPT_CHARS} characters")
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
+        if not isinstance(workspace, str) or not workspace.strip():
+            raise ValueError("workspace must not be empty")
         if conversation_id is not None and not conversation_id.strip():
             raise ValueError("conversation_id must not be empty")
+        if conversation_id is not None:
+            conversation_id = core.validate_identifier(
+                conversation_id,
+                "conversation_id",
+            )
         root = Path(workspace).expanduser().resolve()
         if not root.is_dir():
             raise WorkspaceAccessError(f"workspace is not a directory: {root}")

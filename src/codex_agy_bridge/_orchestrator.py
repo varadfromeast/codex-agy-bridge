@@ -438,14 +438,22 @@ class RunnerOrchestrator:
             )
             and (runner_exited or no_recorded_process_is_alive)
         ):
+            terminal_status = (
+                "canceled" if state["status"] == "cancel_requested" else "failed"
+            )
+            terminal_error = (
+                None
+                if terminal_status == "canceled"
+                else "runner exited before recording a terminal status"
+            )
             state = self.update_state(
                 run_id,
-                status="failed",
-                error="runner exited before recording a terminal status",
+                status=terminal_status,
+                error=terminal_error,
                 finished_at=core.utc_now(),
                 only_if_active=True,
             )
-            if state["status"] == "failed":
+            if state["status"] in {"failed", "canceled"}:
                 self.get_session(state).kill()
         if compact:
             conversation_id = state.get("conversation_id")

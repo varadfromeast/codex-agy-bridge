@@ -158,6 +158,52 @@ def test_run_request_rejects_oversized_prompt(tmp_path):
         )
 
 
+@pytest.mark.parametrize("workspace", ["", "   "])
+def test_run_request_rejects_blank_workspace(workspace):
+    with pytest.raises(ValueError, match="workspace must not be empty"):
+        RunRequest.prepare(
+            prompt="work",
+            workspace=workspace,
+            timeout_seconds=30,
+            conversation_id=None,
+            dangerously_skip_permissions=False,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
+            goal_id=None,
+            target_name=None,
+            cli=FakeCli(),
+        )
+
+
+@pytest.mark.parametrize(
+    "conversation_id",
+    ["../escape", "nested/path", ".", "..", "bad\x00id"],
+)
+def test_run_request_rejects_unsafe_conversation_id(tmp_path, conversation_id):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="conversation_id"):
+        RunRequest.prepare(
+            prompt="work",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=False,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
+            goal_id=None,
+            target_name=None,
+            cli=FakeCli(),
+        )
+
+
 def test_additional_directory_order_is_canonical(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

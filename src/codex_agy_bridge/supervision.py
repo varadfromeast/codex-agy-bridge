@@ -191,30 +191,33 @@ class RunSupervisor:
         if response != self.marker_response:
             self.marker_response = response
             self.marker_seen_at = time.monotonic()
-            return False
-        return bool(
-            self.marker_seen_at
-            and time.monotonic() - self.marker_seen_at
-            >= runtime.COMPLETION_STABILITY_SECONDS
-        )
+        return True
 
     def _finish_after_exit(self) -> int:
         self._observe_conversation(force=True)
+        return_code = self._return_code()
         response = runtime.clean_response(
             self._response(),
             str(self.state["completion_marker"]),
         )
         if self.cancel_path.exists():
             status, error = "canceled", None
+        elif return_code not in {None, 0}:
+            status = "failed"
+            error = (
+                f"agy exited with code {return_code} after a partial response"
+                if response
+                else f"agy exited with code {return_code} without a response"
+            )
         elif response:
             status, error = "completed", None
         else:
-            status, error = self._classify_empty_response(self._return_code())
+            status, error = self._classify_empty_response(return_code)
         self._finish(
             status=status,
             result=response,
             error=error,
-            return_code=self._return_code(),
+            return_code=return_code,
         )
         return 0 if status == "completed" else 1
 
