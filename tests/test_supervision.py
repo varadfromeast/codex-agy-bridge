@@ -45,6 +45,7 @@ def test_supervisor_classifies_successful_exit(monkeypatch, tmp_path):
     assert updates[-1]["status"] == "completed"
     assert updates[-1]["result"] == "result"
     assert updates[-1]["return_code"] is None
+    assert (tmp_path / "final-result.txt").read_text(encoding="utf-8") == "result"
 
 
 def test_supervisor_classifies_nonzero_cli_exit(monkeypatch, tmp_path):

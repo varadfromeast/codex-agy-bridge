@@ -210,8 +210,22 @@ def agy_transcript(
 
 @mcp.tool()
 def agy_result(run_id: str) -> dict[str, Any]:
-    """Return the latest completed planner response and terminal status."""
+    """Return terminal status and compact final-result metadata."""
     return orchestration.result(run_id)
+
+
+@mcp.tool()
+def agy_result_read(
+    run_id: str,
+    offset_bytes: int = 0,
+    max_bytes: int = 65_536,
+) -> dict[str, Any]:
+    """Read a bounded byte chunk from a Run's final result artifact."""
+    return orchestration.result_read(
+        run_id,
+        offset_bytes=offset_bytes,
+        max_bytes=max_bytes,
+    )
 
 
 @mcp.tool()

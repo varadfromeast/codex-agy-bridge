@@ -35,6 +35,8 @@ from codex_agy_bridge.store import DiskRunStore, RunStore
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 4
 JANITOR_INTERVAL_SECONDS = 60
+RESULT_PREVIEW_BYTES = 4096
+RESULT_READ_MAX_BYTES = 262_144
 
 
 def _global_max_parallel() -> int:
@@ -149,6 +151,10 @@ class RunnerOrchestrator:
             Path to the run directory.
         """
         return core.run_dir(run_id, state_root=self.state_root)
+
+    def result_artifact_path(self, run_id: str) -> Path:
+        """Return the immutable final-result artifact path for a Run."""
+        return self.run_dir(run_id) / "final-result.txt"
 
     def goal_dir(self, goal_id: str) -> Path:
         """Get the goal directory for the given goal_id.
@@ -569,20 +575,81 @@ class RunnerOrchestrator:
         """
         state = self.load_state(run_id)
         conversation_id = state.get("conversation_id")
-        response = (
-            core.final_response(conversation_id)
-            if conversation_id
-            else state.get("result")
-        )
+        artifact_path = self._ensure_result_artifact(state)
+        result = None
+        if artifact_path and artifact_path.is_file():
+            total_bytes = artifact_path.stat().st_size
+            with artifact_path.open("rb") as handle:
+                preview_bytes = handle.read(RESULT_PREVIEW_BYTES)
+            result = {
+                "preview": preview_bytes.decode("utf-8", errors="replace"),
+                "total_bytes": total_bytes,
+                "complete": total_bytes <= RESULT_PREVIEW_BYTES,
+                "artifact_path": str(artifact_path),
+                "read_with": "agy_result_read",
+            }
         return {
             "run_id": run_id,
             "status": state["status"],
             "conversation_id": conversation_id,
-            "result": core.clean_response(
-                response, state.get("completion_marker")
-            ),
+            "result": result,
             "error": state.get("error"),
         }
+
+    def result_read(
+        self,
+        run_id: str,
+        *,
+        offset_bytes: int = 0,
+        max_bytes: int = 65_536,
+    ) -> dict[str, Any]:
+        """Read a bounded byte chunk from a Run's immutable final result."""
+        if offset_bytes < 0:
+            raise ValueError("offset_bytes must be non-negative")
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be at least 1")
+        max_bytes = min(max_bytes, RESULT_READ_MAX_BYTES)
+        state = self.load_state(run_id)
+        artifact_path = self._ensure_result_artifact(state)
+        if artifact_path is None or not artifact_path.is_file():
+            raise ValueError("result artifact is unavailable")
+        total_bytes = artifact_path.stat().st_size
+        with artifact_path.open("rb") as handle:
+            handle.seek(min(offset_bytes, total_bytes))
+            data = handle.read(max_bytes)
+        next_offset = offset_bytes + len(data)
+        complete = next_offset >= total_bytes
+        return {
+            "run_id": run_id,
+            "offset_bytes": offset_bytes,
+            "returned_bytes": len(data),
+            "total_bytes": total_bytes,
+            "next_offset_bytes": None if complete else next_offset,
+            "complete": complete,
+            "content": data.decode("utf-8", errors="replace"),
+        }
+
+    def _ensure_result_artifact(self, state: RunState) -> Path | None:
+        run_id = state["run_id"]
+        path = self.result_artifact_path(run_id)
+        if path.is_file():
+            return path
+        response = state.get("result")
+        conversation_id = state.get("conversation_id")
+        if response is None and conversation_id:
+            response = core.final_response(conversation_id)
+        response = core.clean_response(response, state.get("completion_marker"))
+        if response is None:
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(response, encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        return path
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         """Request cancel of an active run and kill execution session.

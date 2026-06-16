@@ -251,6 +251,11 @@ class RunSupervisor:
         error: str | None = None,
         return_code: int | None = None,
     ) -> None:
+        if result is not None:
+            path = self.directory / "final-result.txt"
+            temporary = self.directory / ".final-result.txt.tmp"
+            temporary.write_text(result, encoding="utf-8")
+            os.replace(temporary, path)
         runtime.update_state(
             self.run_id,
             status=status,

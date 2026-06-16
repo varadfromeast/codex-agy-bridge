@@ -212,6 +212,20 @@ def result(run_id: str) -> dict[str, Any]:
     return _orchestrator.result(run_id)
 
 
+def result_read(
+    run_id: str,
+    *,
+    offset_bytes: int = 0,
+    max_bytes: int = 65_536,
+) -> dict[str, Any]:
+    """Read a bounded byte chunk from a Run's final result artifact."""
+    return _orchestrator.result_read(
+        run_id,
+        offset_bytes=offset_bytes,
+        max_bytes=max_bytes,
+    )
+
+
 def cancel(run_id: str) -> dict[str, Any]:
     """Request cancel of an active run and kill execution session.
 

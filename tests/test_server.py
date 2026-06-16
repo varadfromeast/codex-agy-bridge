@@ -16,3 +16,11 @@ def test_send_text_defaults_to_press_enter():
     parameters = inspect.signature(server.agy_target_send_text).parameters
 
     assert parameters["enter"].default is True
+
+
+def test_result_read_uses_simple_byte_offsets():
+    parameters = inspect.signature(server.agy_result_read).parameters
+
+    assert list(parameters) == ["run_id", "offset_bytes", "max_bytes"]
+    assert parameters["offset_bytes"].default == 0
+    assert parameters["max_bytes"].default == 65_536

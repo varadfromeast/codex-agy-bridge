@@ -163,5 +163,5 @@ and transcript compatibility; `diagnostics.py` contains bounded probes; and
 - Reject dead-session input rather than queueing work that cannot be consumed.
 - Treat `sandbox` and additional directories as CLI policy hints, never as
   filesystem containment.
-- Run GitNexus impact analysis before editing symbols and `detect_changes()`
-  before committing.
+- Inspect affected call paths before editing shared symbols and review the
+  final diff before committing.

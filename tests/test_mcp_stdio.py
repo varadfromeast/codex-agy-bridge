@@ -102,6 +102,7 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
         "agy_status",
         "agy_transcript",
         "agy_result",
+        "agy_result_read",
             "agy_cancel",
             "agy_models",
             "agy_doctor",

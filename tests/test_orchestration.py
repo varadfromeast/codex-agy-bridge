@@ -515,6 +515,70 @@ def test_status_marks_cancel_requested_dead_runner_as_canceled(tmp_path):
     assert session.is_alive() is False
 
 
+def test_result_returns_preview_and_read_metadata_for_large_artifact(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": "conversation-1",
+            "result": "abcdef",
+            "error": None,
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    result = orchestrator.result("run")
+
+    assert result["result"] == {
+        "preview": "abcdef",
+        "total_bytes": 6,
+        "complete": True,
+        "artifact_path": str(tmp_path / "runs" / "run" / "final-result.txt"),
+        "read_with": "agy_result_read",
+    }
+    assert (tmp_path / "runs" / "run" / "final-result.txt").read_text() == "abcdef"
+
+
+def test_result_read_uses_independent_byte_offsets(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": None,
+            "result": "ignored",
+            "error": None,
+        },
+    )
+    run_dir = tmp_path / "runs" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final-result.txt").write_text("abcdefghij", encoding="utf-8")
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    first = orchestrator.result_read("run", offset_bytes=0, max_bytes=4)
+    second = orchestrator.result_read("run", offset_bytes=4, max_bytes=4)
+    repeated = orchestrator.result_read("run", offset_bytes=0, max_bytes=4)
+    final = orchestrator.result_read("run", offset_bytes=8, max_bytes=4)
+
+    assert first == {
+        "run_id": "run",
+        "offset_bytes": 0,
+        "returned_bytes": 4,
+        "total_bytes": 10,
+        "next_offset_bytes": 4,
+        "complete": False,
+        "content": "abcd",
+    }
+    assert second["content"] == "efgh"
+    assert repeated == first
+    assert final["content"] == "ij"
+    assert final["next_offset_bytes"] is None
+    assert final["complete"] is True
+
+
 def test_concurrent_goal_targets_preserve_both_registrations(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

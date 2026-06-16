@@ -190,6 +190,6 @@ before saving.
   the already-running MCP process.
 
 After each live batch: record exact outcomes, add focused regression tests for
-confirmed defects, run GitNexus impact analysis before implementation edits,
+confirmed defects, inspect the affected call paths before implementation edits,
 fix the defects, verify the full suite, and design the next live batch from
 remaining gaps.

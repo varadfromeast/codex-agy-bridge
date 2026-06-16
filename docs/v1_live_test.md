@@ -329,10 +329,10 @@ For each failure:
 
 1. Add a defect record with exact reproduction evidence.
 2. Add one public-interface regression test and confirm RED.
-3. Run scoped GitNexus impact analysis before editing.
+3. Inspect the affected call paths before editing.
 4. Implement the smallest fix and confirm GREEN.
 5. Run the related tests, full suite, Ruff, and the failed live scenario.
-6. Run GitNexus `detect_changes()` before committing.
+6. Review the final diff before committing.
 
 ## V1 Exit Criteria
 
