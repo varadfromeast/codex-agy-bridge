@@ -13,7 +13,7 @@ from typing import Any, cast
 
 from filelock import FileLock
 
-from codex_agy_bridge import core, interactive_input, terminal
+from codex_agy_bridge import core, interactive_input, labels, terminal
 from codex_agy_bridge.cli import AntigravityCli
 from codex_agy_bridge.exceptions import ConcurrencyLimitExceeded, RunNotFoundError
 from codex_agy_bridge.execution import ExecutionSession, TmuxSession
@@ -74,7 +74,12 @@ def default_session_factory(state: RunState, run_dir: Path) -> ExecutionSession:
     Returns:
         A TmuxSession instance.
     """
-    return TmuxSession(run_dir, session_name=state.get("tmux_session"))
+    return TmuxSession(
+        run_dir,
+        session_name=state.get("tmux_session"),
+        execution_mode=state.get("execution_mode", "print"),
+        execution_surface=state.get("execution_surface", "headless"),
+    )
 
 
 class RunnerOrchestrator:
@@ -299,6 +304,9 @@ class RunnerOrchestrator:
         sandbox: bool = False,
         additional_directories: list[str] | None = None,
         execution_mode: str = "print",
+        agent_mode: str = "task",
+        execution_surface: str = "foreground",
+        human_attachable: bool = True,
         goal_id: str | None = None,
         target_name: str | None = None,
     ) -> RunState:
@@ -336,6 +344,9 @@ class RunnerOrchestrator:
             sandbox=sandbox,
             additional_directories=additional_directories or [],
             execution_mode=execution_mode,
+            agent_mode=agent_mode,
+            execution_surface=execution_surface,
+            human_attachable=human_attachable,
             goal_id=goal_id,
             target_name=target_name,
             cli=self.cli,
@@ -381,6 +392,10 @@ class RunnerOrchestrator:
             directory = self.run_dir(run_id)
             directory.mkdir(parents=True, exist_ok=False)
             now = core.utc_now()
+            session_label = labels.session_label(
+                seed=request.target_name or request.prompt,
+                run_id=run_id,
+            )
             state = request.initial_state(
                 run_id=run_id,
                 now=now,
@@ -391,7 +406,8 @@ class RunnerOrchestrator:
                         str(request.workspace)
                     )
                 ),
-                tmux_session=terminal.session_name(run_id),
+                session_label=session_label,
+                tmux_session=session_label,
                 completion_marker=f"AGY_RUN_COMPLETE_{uuid.uuid4().hex}",
             )
             self.store.save_run(run_id, state)
@@ -427,13 +443,11 @@ class RunnerOrchestrator:
         state = self.load_state(run_id)
         runner_pid = state.get("runner_pid")
         agy_pid = state.get("agy_pid")
-        runner_exited = (
-            runner_pid is not None
-            and not self.process_manager.is_alive(runner_pid)
+        runner_exited = runner_pid is not None and not self.process_manager.is_alive(
+            runner_pid
         )
-        no_recorded_process_is_alive = (
-            runner_pid is None
-            and (agy_pid is None or not self.process_manager.is_alive(agy_pid))
+        no_recorded_process_is_alive = runner_pid is None and (
+            agy_pid is None or not self.process_manager.is_alive(agy_pid)
         )
         if (
             state["status"] in ACTIVE_STATUSES
@@ -463,11 +477,7 @@ class RunnerOrchestrator:
                 self.get_session(state).kill()
         if compact:
             conversation_id = state.get("conversation_id")
-            latest = (
-                core.latest_step(conversation_id)
-                if conversation_id
-                else None
-            )
+            latest = core.latest_step(conversation_id) if conversation_id else None
             execution_mode = state.get("execution_mode", "print")
             session_state = None
             interactive_queue = None
@@ -502,10 +512,10 @@ class RunnerOrchestrator:
                 "updated_at": state.get("updated_at"),
                 "finished_at": state.get("finished_at"),
                 "latest_step": latest,
-                "provider_health": core.run_provider_health(
-                    self.run_dir(run_id)
-                ),
+                "provider_health": core.run_provider_health(self.run_dir(run_id)),
                 "interactive_queue": interactive_queue,
+                "session_label": state.get("session_label"),
+                "tmux_session": state.get("tmux_session"),
             }
         result: dict[str, Any] = dict(state)
         result["paths"] = {
@@ -518,9 +528,7 @@ class RunnerOrchestrator:
         }
         conversation_id = state.get("conversation_id")
         if conversation_id:
-            result["paths"]["transcript"] = str(
-                core.transcript_path(conversation_id)
-            )
+            result["paths"]["transcript"] = str(core.transcript_path(conversation_id))
         return core.public_state(result)
 
     def transcript(
@@ -679,9 +687,8 @@ class RunnerOrchestrator:
         # instead of leaving the run stuck in cancel_requested.
         runner_pid = state.get("runner_pid")
         agy_pid = state.get("agy_pid")
-        if (
-            (runner_pid is None or not self.process_manager.is_alive(runner_pid))
-            and (agy_pid is None or not self.process_manager.is_alive(agy_pid))
+        if (runner_pid is None or not self.process_manager.is_alive(runner_pid)) and (
+            agy_pid is None or not self.process_manager.is_alive(agy_pid)
         ):
             self.update_state(
                 run_id,
@@ -728,8 +735,7 @@ class RunnerOrchestrator:
             or max_parallel > DEFAULT_MAX_PARALLEL
         ):
             raise ValueError(
-                "max_parallel must be an integer between "
-                f"1 and {DEFAULT_MAX_PARALLEL}"
+                f"max_parallel must be an integer between 1 and {DEFAULT_MAX_PARALLEL}"
             )
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must not be empty")
@@ -843,6 +849,8 @@ class RunnerOrchestrator:
                 "status": state["status"],
                 "conversation_id": state.get("conversation_id"),
                 "error": state.get("error"),
+                "session_label": state.get("session_label"),
+                "tmux_session": state.get("tmux_session"),
             }
         statuses = {item["status"] for item in targets.values()}
         if statuses and statuses <= {"completed"}:
@@ -875,7 +883,12 @@ class RunnerOrchestrator:
         if not terminal.alive(session):
             raise ValueError(f"tmux session is not running: {session}")
         terminal.attach(session, check=True)
-        return {"run_id": run_id, "tmux_session": session, "opened": True}
+        return {
+            "run_id": run_id,
+            "tmux_session": session,
+            "session_label": self.load_state(run_id).get("session_label"),
+            "opened": True,
+        }
 
     def send_text(
         self, run_id: str, text: str, *, enter: bool = True
@@ -904,6 +917,13 @@ class RunnerOrchestrator:
                 f"tmux session is not running: {state.get('tmux_session')}"
             )
         queued = enter and bool(text)
+        delivery = "queued_interactive_prompt" if queued else "interactive_keystrokes"
+        interactive_input.record_mcp_input(
+            self.run_dir(run_id),
+            text=text,
+            enter=enter,
+            delivery=delivery,
+        )
         if queued:
             interactive_input.enqueue(self.run_dir(run_id), text)
         else:
@@ -914,9 +934,5 @@ class RunnerOrchestrator:
             "sent": True,
             "enter": enter,
             "execution_mode": state.get("execution_mode", "print"),
-            "delivery": (
-                "queued_interactive_prompt"
-                if queued
-                else "interactive_keystrokes"
-            ),
+            "delivery": delivery,
         }

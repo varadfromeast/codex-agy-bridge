@@ -46,7 +46,12 @@ def launch_process(
 ) -> None:
     run_id = str(state["run_id"])
     run_directory = run_dir(run_id)
-    tmux_session = TmuxSession(run_directory, session_name=state.get("tmux_session"))
+    tmux_session = TmuxSession(
+        run_directory,
+        session_name=state.get("tmux_session"),
+        execution_mode=state.get("execution_mode", "print"),
+        execution_surface=state.get("execution_surface", "headless"),
+    )
     tmux_session.start(run_id, command, Path(workspace))
     return None
 

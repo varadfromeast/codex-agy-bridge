@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from filelock import FileLock
 
-from codex_agy_bridge.core import atomic_write_json
+from codex_agy_bridge.core import atomic_write_json, utc_now
 
 
 def enqueue(directory: Path, text: str) -> None:
@@ -42,6 +43,33 @@ def count(directory: Path) -> int:
     """Return the number of prompts waiting for delivery."""
     with FileLock(str(directory / "interactive-input.lock"), timeout=10):
         return len(_load(directory))
+
+
+def record_mcp_input(
+    directory: Path,
+    *,
+    text: str,
+    enter: bool,
+    delivery: str,
+) -> None:
+    """Append one MCP-originated input event before queueing or delivery."""
+    if "\x00" in text:
+        raise ValueError("text must not contain NUL bytes")
+    directory.mkdir(parents=True, exist_ok=True)
+    event: dict[str, Any] = {
+        "created_at": utc_now(),
+        "origin": "mcp",
+        "text": text,
+        "enter": enter,
+        "delivery": delivery,
+    }
+    with (
+        FileLock(str(directory / "interactive-input.lock"), timeout=10),
+        (directory / "interactive-input-events.jsonl").open(
+            "a", encoding="utf-8"
+        ) as handle,
+    ):
+        handle.write(json.dumps(event, separators=(",", ":")) + "\n")
 
 
 def _load(directory: Path) -> list[str]:

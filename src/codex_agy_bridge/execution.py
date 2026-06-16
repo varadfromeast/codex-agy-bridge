@@ -55,7 +55,13 @@ class ExecutionSession(Protocol):
 class TmuxSession:
     """Session adapter for running agent targets inside a Tmux session."""
 
-    def __init__(self, run_dir: Path, session_name: str | None = None) -> None:
+    def __init__(
+        self,
+        run_dir: Path,
+        session_name: str | None = None,
+        execution_mode: str = "print",
+        execution_surface: str = "headless",
+    ) -> None:
         """Initialize TmuxSession.
 
         Args:
@@ -64,6 +70,8 @@ class TmuxSession:
         """
         self.run_dir = run_dir
         self.session_name = session_name
+        self.execution_mode = execution_mode
+        self.execution_surface = execution_surface
 
     def start(self, run_id: str, command: list[str], workspace: Path) -> None:
         """Spawn the tmux session and pipe stream data."""
@@ -77,6 +85,8 @@ class TmuxSession:
             progress_log=self.run_dir / "terminal-progress.log",
             stdout_log=self.run_dir / "agy.stdout.log",
             stderr_log=self.run_dir / "agy.stderr.log",
+            execution_mode=self.execution_mode,
+            execution_surface=self.execution_surface,
         )
 
     def kill(self) -> None:

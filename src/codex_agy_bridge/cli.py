@@ -126,13 +126,16 @@ class AntigravityCli:
         sandbox = bool(state.get("sandbox", False))
         directories = list(state.get("additional_directories") or [])
         mode = str(state.get("execution_mode") or "print")
-        if sandbox or directories or mode == "interactive":
+        visible_cli = (
+            mode == "interactive" or state.get("execution_surface") == "foreground"
+        )
+        if sandbox or directories or visible_cli:
             capabilities = self.capabilities()
             if sandbox and not capabilities.sandbox:
                 raise ValueError("installed agy does not support --sandbox")
             if directories and not capabilities.additional_directories:
                 raise ValueError("installed agy does not support --add-dir")
-            if mode == "interactive" and not capabilities.interactive:
+            if visible_cli and not capabilities.interactive:
                 raise ValueError(
                     "installed agy does not support --prompt-interactive"
                 )
@@ -158,11 +161,7 @@ class AntigravityCli:
             command.append("--dangerously-skip-permissions")
         command.extend(
             [
-                (
-                    "--prompt-interactive"
-                    if mode == "interactive"
-                    else "--print"
-                ),
+                "--prompt-interactive" if visible_cli else "--print",
                 str(state["prompt"]),
             ]
         )

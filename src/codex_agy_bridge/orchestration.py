@@ -122,6 +122,9 @@ def create_run(
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
     execution_mode: str = "print",
+    agent_mode: str = "task",
+    execution_surface: str = "foreground",
+    human_attachable: bool = True,
     goal_id: str | None = None,
     target_name: str | None = None,
 ) -> RunState:
@@ -153,6 +156,9 @@ def create_run(
         sandbox=sandbox,
         additional_directories=additional_directories,
         execution_mode=execution_mode,
+        agent_mode=agent_mode,
+        execution_surface=execution_surface,
+        human_attachable=human_attachable,
         goal_id=goal_id,
         target_name=target_name,
     )

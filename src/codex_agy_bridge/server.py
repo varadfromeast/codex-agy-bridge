@@ -146,6 +146,9 @@ def agy_interactive_start(
                 sandbox=sandbox,
                 additional_directories=additional_directories,
                 execution_mode="interactive",
+                agent_mode="conversation",
+                execution_surface="foreground",
+                human_attachable=True,
             ),
         )
     )

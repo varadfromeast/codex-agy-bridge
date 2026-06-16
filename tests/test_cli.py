@@ -103,6 +103,28 @@ def test_cli_builds_interactive_command_with_added_directories(monkeypatch):
     ]
 
 
+def test_cli_builds_foreground_task_command_with_visible_interactive_cli(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.subprocess.run",
+        lambda _command, **_kwargs: completed("--prompt-interactive\n"),
+    )
+    cli = AntigravityCli(executable="agy")
+
+    command = cli.build_run_command(
+        {
+            "run_id": "run-1",
+            "timeout_seconds": 120,
+            "prompt": "Task:\nwork",
+            "execution_mode": "print",
+            "execution_surface": "foreground",
+            "agent_mode": "task",
+        },
+        run_directory="/tmp/run-1",
+    )
+
+    assert command[-2:] == ["--prompt-interactive", "Task:\nwork"]
+
+
 def test_cli_bounds_failed_command_output(monkeypatch):
     monkeypatch.setattr(
         "codex_agy_bridge.cli.subprocess.run",

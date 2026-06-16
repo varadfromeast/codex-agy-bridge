@@ -23,6 +23,8 @@ def launch(
     progress_log: Path,
     stdout_log: Path,
     stderr_log: Path,
+    execution_mode: str = "print",
+    execution_surface: str = "headless",
 ) -> None:
     exit_code = terminal_log.parent / "agy.exit-code"
     exit_code_tmp = terminal_log.parent / "agy.exit-code.tmp"
@@ -31,28 +33,40 @@ def launch(
         value = os.environ.get(name)
         if value is not None:
             session_environment.extend(["-e", f"{name}={value}"])
-    script = "\n".join(
-        [
-            "set -u",
-            f"{shlex.join(command)} >> {shlex.quote(str(stdout_log))} "
-            f"2>> {shlex.quote(str(stderr_log))} &",
-            "agy_pid=$!",
-            f"tail -n +1 -F {shlex.quote(str(progress_log))} &",
-            "tail_pid=$!",
-            "cleanup() {",
-            '  kill "$agy_pid" "$tail_pid" 2>/dev/null || true',
-            "}",
-            "trap cleanup HUP INT TERM",
-            'wait "$agy_pid"',
-            "status=$?",
-            f"printf '%s\\n' \"$status\" > {shlex.quote(str(exit_code_tmp))}",
-            f"mv {shlex.quote(str(exit_code_tmp))} {shlex.quote(str(exit_code))}",
-            "sleep 1",
-            'kill "$tail_pid" 2>/dev/null || true',
-            'wait "$tail_pid" 2>/dev/null || true',
-            "exit $status",
-        ]
-    )
+    if execution_surface == "foreground":
+        script = "\n".join(
+            [
+                "set -u",
+                shlex.join(command),
+                "status=$?",
+                f"printf '%s\\n' \"$status\" > {shlex.quote(str(exit_code_tmp))}",
+                f"mv {shlex.quote(str(exit_code_tmp))} {shlex.quote(str(exit_code))}",
+                "exit $status",
+            ]
+        )
+    else:
+        script = "\n".join(
+            [
+                "set -u",
+                f"{shlex.join(command)} >> {shlex.quote(str(stdout_log))} "
+                f"2>> {shlex.quote(str(stderr_log))} &",
+                "agy_pid=$!",
+                f"tail -n +1 -F {shlex.quote(str(progress_log))} &",
+                "tail_pid=$!",
+                "cleanup() {",
+                '  kill "$agy_pid" "$tail_pid" 2>/dev/null || true',
+                "}",
+                "trap cleanup HUP INT TERM",
+                'wait "$agy_pid"',
+                "status=$?",
+                f"printf '%s\\n' \"$status\" > {shlex.quote(str(exit_code_tmp))}",
+                f"mv {shlex.quote(str(exit_code_tmp))} {shlex.quote(str(exit_code))}",
+                "sleep 1",
+                'kill "$tail_pid" 2>/dev/null || true',
+                'wait "$tail_pid" 2>/dev/null || true',
+                "exit $status",
+            ]
+        )
     subprocess.run(
         [
             "tmux",

@@ -20,6 +20,10 @@ import re
 import sys
 from pathlib import Path
 
+if "--help" in sys.argv:
+    print("--prompt-interactive")
+    raise SystemExit(0)
+
 root = Path(os.environ["AGY_BRIDGE_AGY_ROOT"])
 conversation_id = "fake-conversation"
 completion_marker = re.search(

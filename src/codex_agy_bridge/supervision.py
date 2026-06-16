@@ -181,9 +181,9 @@ class RunSupervisor:
         return self.harvester.latest_response if self.harvester else None
 
     def _completion_is_stable(self, response: str | None) -> bool:
-        if self.state.get("execution_mode") == "interactive":
-            return False
         marker = str(self.state["completion_marker"])
+        if not marker:
+            return False
         if not response or marker not in response:
             self.marker_response = None
             self.marker_seen_at = None

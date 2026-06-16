@@ -124,6 +124,36 @@ def test_terminal_launch_quotes_pipe_log_path(monkeypatch, tmp_path):
     assert calls[1][0][-1] == f"cat >> {shlex.quote(str(log_path))}"
 
 
+def test_terminal_launch_foreground_runs_visible_cli_without_tail_wrapper(
+    monkeypatch, tmp_path
+):
+    calls = []
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    terminal.launch(
+        "agy-target",
+        ["/usr/local/bin/agy", "--prompt-interactive", "Task:\nwork"],
+        workspace=str(tmp_path),
+        terminal_log=tmp_path / "terminal.log",
+        progress_log=tmp_path / "terminal-progress.log",
+        stdout_log=tmp_path / "agy.stdout.log",
+        stderr_log=tmp_path / "agy.stderr.log",
+        execution_surface="foreground",
+    )
+
+    shell_index = calls[0][0].index("sh")
+    script = calls[0][0][shell_index + 2]
+    assert "/usr/local/bin/agy --prompt-interactive 'Task:" in script
+    assert "tail -n +1 -F" not in script
+    assert "agy_pid=$!" not in script
+    assert ">>" not in script
+    assert calls[1][0][:5] == ["tmux", "pipe-pane", "-o", "-t", "agy-target"]
+
+
 def test_terminal_attach_opens_terminal_app(monkeypatch):
     calls = []
     monkeypatch.setattr(

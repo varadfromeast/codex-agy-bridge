@@ -49,6 +49,39 @@ def test_build_command_places_flags_before_print(monkeypatch, tmp_path):
     ]
 
 
+def test_build_command_uses_visible_cli_for_foreground_task(monkeypatch, tmp_path):
+    monkeypatch.delenv("AGY_CMD", raising=False)
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.shutil.which",
+        lambda _: "/usr/local/bin/agy",
+    )
+    monkeypatch.setattr(runner, "run_dir", lambda _: tmp_path)
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.AntigravityCli.capabilities",
+        lambda _self: type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )(),
+    )
+    state = {
+        "run_id": "run-1",
+        "timeout_seconds": 120,
+        "prompt": "Task:\nDo the work",
+        "execution_mode": "print",
+        "execution_surface": "foreground",
+        "agent_mode": "task",
+    }
+
+    command = runner.build_command(state)
+
+    assert command[-2:] == ["--prompt-interactive", "Task:\nDo the work"]
+
+
 def test_new_run_ignores_unmatched_workspace_conversation(monkeypatch, tmp_path):
     states = [
         {

@@ -12,6 +12,21 @@ from codex_agy_bridge import core
 from codex_agy_bridge.orchestration import RunnerOrchestrator
 
 
+def allow_visible_cli(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.AntigravityCli.capabilities",
+        lambda _self: type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )(),
+    )
+
+
 def test_janitor_cleans_up_orphans(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -20,6 +35,7 @@ def test_janitor_cleans_up_orphans(tmp_path, monkeypatch):
     orch = RunnerOrchestrator(state_root=state_root, process_manager=pm)
 
     monkeypatch.setenv("AGY_CMD", "/dummy/agy")
+    allow_visible_cli(monkeypatch)
 
     # 1. Create a run
     run_state = orch.create_run(
@@ -60,6 +76,7 @@ def test_janitor_stops_tmux_session_when_supervisor_is_dead(tmp_path, monkeypatc
     stopped = []
 
     monkeypatch.setenv("AGY_CMD", "/dummy/agy")
+    allow_visible_cli(monkeypatch)
     monkeypatch.setattr(
         "codex_agy_bridge.janitor.TmuxSession.kill",
         lambda self: stopped.append(self.session_name),
@@ -143,6 +160,7 @@ def test_create_run_rate_limits_automatic_janitor(tmp_path, monkeypatch):
     clean_calls = []
 
     monkeypatch.setenv("AGY_CMD", "/dummy/agy")
+    allow_visible_cli(monkeypatch)
     monkeypatch.setattr(
         "codex_agy_bridge.janitor.RunJanitor.clean",
         lambda _self, max_log_age_days: clean_calls.append(max_log_age_days),

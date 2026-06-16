@@ -39,6 +39,20 @@ class MockProcessManager(ProcessManager):
         if pid in self.alive_pids:
             self.alive_pids.remove(pid)
 
+def allow_visible_cli(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.AntigravityCli.capabilities",
+        lambda _self: type(
+            "Capabilities",
+            (),
+            {
+                "sandbox": True,
+                "additional_directories": True,
+                "interactive": True,
+            },
+        )(),
+    )
+
 def test_orchestrator_initialization():
     state_root = Path("/dummy/state")
     pm = MockProcessManager()
@@ -55,6 +69,7 @@ def test_orchestrator_create_run_spawns_process(tmp_path, monkeypatch):
 
     # Mock any CLI check so build_command doesn't fail on missing 'agy'
     monkeypatch.setenv("AGY_CMD", "/dummy/agy")
+    allow_visible_cli(monkeypatch)
 
     run_state = orch.create_run(
         prompt="Test prompt",
@@ -100,6 +115,7 @@ def test_active_run_registry_lifecycle(tmp_path, monkeypatch):
     orch = RunnerOrchestrator(state_root=state_root, process_manager=pm)
 
     monkeypatch.setenv("AGY_CMD", "/dummy/agy")
+    allow_visible_cli(monkeypatch)
 
     # 1. Create a run
     run_state = orch.create_run(

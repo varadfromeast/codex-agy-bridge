@@ -13,6 +13,8 @@ RunStatus = Literal[
     "canceled",
 ]
 ExecutionMode = Literal["print", "interactive"]
+AgentMode = Literal["task", "conversation"]
+ExecutionSurface = Literal["foreground", "headless"]
 
 ACTIVE_STATUSES: set[RunStatus] = {"queued", "running", "cancel_requested"}
 TERMINAL_STATUSES: set[RunStatus] = {"completed", "failed", "canceled"}
@@ -35,10 +37,14 @@ class RunState(TypedDict, total=False):
     sandbox: bool
     additional_directories: list[str]
     execution_mode: ExecutionMode
+    agent_mode: AgentMode
+    execution_surface: ExecutionSurface
+    human_attachable: bool
     model: str
     goal_id: str | None
     target_name: str | None
     request_key: str
+    session_label: str
     tmux_session: str | None
     runner_pid: int | None
     agy_pid: int | None

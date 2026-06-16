@@ -22,6 +22,13 @@ class FakeCli:
             raise ValueError("unknown model")
 
 
+class NonInteractiveCli(FakeCli):
+    def capabilities(self):
+        capabilities = super().capabilities()
+        capabilities.interactive = False
+        return capabilities
+
+
 def test_run_request_prepares_identity_and_initial_state(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -39,6 +46,9 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
         sandbox=True,
         additional_directories=[str(extra)],
         execution_mode="print",
+        agent_mode="task",
+        execution_surface="foreground",
+        human_attachable=True,
         goal_id=None,
         target_name=None,
         cli=FakeCli(),
@@ -47,6 +57,7 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
         run_id="run-1",
         now="now",
         previous_conversation_id="previous",
+        session_label="agy-work-run-1",
         tmux_session="agy-run-1",
         completion_marker="DONE",
     )
@@ -55,6 +66,15 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
     assert request.additional_directories == (str(extra.resolve()),)
     assert request.request_key
     assert state["request_key"] == request.request_key
+    assert state["session_label"] == "agy-work-run-1"
+    assert state["agent_mode"] == "task"
+    assert state["execution_surface"] == "foreground"
+    assert state["human_attachable"] is True
+    assert state["prompt"].startswith("Task:\ndo work")
+    assert "\nAcceptance:\n" in state["prompt"]
+    assert "\nConstraints:\n" in state["prompt"]
+    assert "\nExpected output:\n" in state["prompt"]
+    assert "\nCompletion marker:\nDONE" in state["prompt"]
     assert state["prompt"].endswith("DONE")
     assert state["previous_conversation_id"] == "previous"
 
@@ -73,6 +93,9 @@ def test_interactive_run_request_does_not_add_completion_marker(tmp_path):
         sandbox=False,
         additional_directories=[],
         execution_mode="interactive",
+        agent_mode="conversation",
+        execution_surface="foreground",
+        human_attachable=True,
         goal_id=None,
         target_name=None,
         cli=FakeCli(),
@@ -82,12 +105,38 @@ def test_interactive_run_request_does_not_add_completion_marker(tmp_path):
         run_id="run-1",
         now="now",
         previous_conversation_id=None,
+        session_label="agy-talk-run-1",
         tmux_session="agy-run-1",
         completion_marker="ignored",
     )
 
     assert state["completion_marker"] == ""
     assert state["prompt"] == "continue talking"
+
+
+def test_foreground_task_requires_prompt_interactive_support(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="--prompt-interactive"):
+        RunRequest.prepare(
+            prompt="visible task",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            dangerously_skip_permissions=False,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
+            goal_id=None,
+            target_name=None,
+            cli=NonInteractiveCli(),
+        )
 
 
 def test_run_request_rejects_duplicate_additional_directories(tmp_path):
@@ -108,6 +157,9 @@ def test_run_request_rejects_duplicate_additional_directories(tmp_path):
             sandbox=False,
             additional_directories=[str(extra), str(extra)],
             execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
             goal_id=None,
             target_name=None,
             cli=FakeCli(),
@@ -130,6 +182,9 @@ def test_run_request_rejects_nul_prompt(tmp_path):
             sandbox=False,
             additional_directories=[],
             execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
             goal_id=None,
             target_name=None,
             cli=FakeCli(),
@@ -152,6 +207,9 @@ def test_run_request_rejects_oversized_prompt(tmp_path):
             sandbox=False,
             additional_directories=[],
             execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
             goal_id=None,
             target_name=None,
             cli=FakeCli(),
@@ -172,6 +230,9 @@ def test_run_request_rejects_blank_workspace(workspace):
             sandbox=False,
             additional_directories=[],
             execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
             goal_id=None,
             target_name=None,
             cli=FakeCli(),
@@ -198,6 +259,9 @@ def test_run_request_rejects_unsafe_conversation_id(tmp_path, conversation_id):
             sandbox=False,
             additional_directories=[],
             execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
             goal_id=None,
             target_name=None,
             cli=FakeCli(),
@@ -223,6 +287,9 @@ def test_additional_directory_order_is_canonical(tmp_path):
         sandbox=False,
         additional_directories=[str(first), str(second)],
         execution_mode="print",
+        agent_mode="task",
+        execution_surface="foreground",
+        human_attachable=True,
         goal_id=None,
         target_name=None,
         cli=FakeCli(),
@@ -238,6 +305,9 @@ def test_additional_directory_order_is_canonical(tmp_path):
         sandbox=False,
         additional_directories=[str(second), str(first)],
         execution_mode="print",
+        agent_mode="task",
+        execution_surface="foreground",
+        human_attachable=True,
         goal_id=None,
         target_name=None,
         cli=FakeCli(),
