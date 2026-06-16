@@ -766,6 +766,143 @@ def test_result_read_uses_independent_byte_offsets(tmp_path):
     assert final["complete"] is True
 
 
+def test_result_read_rejects_negative_offsets(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": None,
+            "result": "ignored",
+            "error": None,
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    with pytest.raises(ValueError, match="offset_bytes"):
+        orchestrator.result_read("run", offset_bytes=-1)
+
+
+def test_result_read_caps_excessive_max_bytes(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": None,
+            "result": "ignored",
+            "error": None,
+        },
+    )
+    run_dir = tmp_path / "runs" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final-result.txt").write_bytes(b"x" * 300_000)
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    result = orchestrator.result_read("run", max_bytes=1_000_000)
+
+    assert result["returned_bytes"] == 262_144
+    assert result["next_offset_bytes"] == 262_144
+    assert result["complete"] is False
+
+
+def test_result_read_offset_beyond_eof_returns_empty_complete_chunk(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": None,
+            "result": "ignored",
+            "error": None,
+        },
+    )
+    run_dir = tmp_path / "runs" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final-result.txt").write_text("abc", encoding="utf-8")
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    result = orchestrator.result_read("run", offset_bytes=10, max_bytes=4)
+
+    assert result == {
+        "run_id": "run",
+        "offset_bytes": 10,
+        "returned_bytes": 0,
+        "total_bytes": 3,
+        "next_offset_bytes": None,
+        "complete": True,
+        "content": "",
+    }
+
+
+def test_result_read_rejects_missing_artifact_for_terminal_run(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": None,
+            "result": None,
+            "error": None,
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    with pytest.raises(ValueError, match="result artifact is unavailable"):
+        orchestrator.result_read("run")
+
+
+def test_result_read_rejects_non_terminal_runs(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "running",
+            "conversation_id": None,
+            "result": "ignored",
+            "error": None,
+        },
+    )
+    run_dir = tmp_path / "runs" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final-result.txt").write_text("abc", encoding="utf-8")
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    with pytest.raises(ValueError, match="terminal runs"):
+        orchestrator.result_read("run")
+
+
+def test_result_read_handles_utf8_boundaries_with_replacement(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": None,
+            "result": "ignored",
+            "error": None,
+        },
+    )
+    run_dir = tmp_path / "runs" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final-result.txt").write_bytes("aéz".encode())
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    first = orchestrator.result_read("run", offset_bytes=0, max_bytes=2)
+    second = orchestrator.result_read("run", offset_bytes=2, max_bytes=2)
+
+    assert first["content"] == "a�"
+    assert first["returned_bytes"] == 2
+    assert second["content"] == "�z"
+    assert second["returned_bytes"] == 2
+
+
 def test_concurrent_goal_targets_preserve_both_registrations(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -845,6 +982,71 @@ def test_goal_target_inherits_execution_policy(monkeypatch, tmp_path):
     assert target["sandbox"] is False
     assert target["additional_directories"] == [str(extra)]
     assert target["dangerously_skip_permissions"] is False
+
+
+def test_goal_status_includes_completed_target_result_metadata(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = MemoryRunStore()
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+    goal = orchestrator.create_goal(
+        objective="collect results",
+        workspace=str(workspace),
+    )
+    run_id = "run-result"
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "completed",
+            "conversation_id": "conversation-1",
+            "result": "target result",
+            "error": None,
+        },
+    )
+    goal["targets"] = {"alpha": run_id}
+    store.save_goal(goal["goal_id"], goal)
+
+    status = orchestrator.goal_status(goal["goal_id"])
+
+    assert status["targets"]["alpha"]["result"] == {
+        "preview": "target result",
+        "total_bytes": 13,
+        "complete": True,
+        "artifact_path": str(
+            tmp_path / "state" / "runs" / run_id / "final-result.txt"
+        ),
+        "read_with": "agy_result_read",
+    }
+
+
+def test_goal_status_omits_result_metadata_for_active_target(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = MemoryRunStore()
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+    goal = orchestrator.create_goal(
+        objective="collect results",
+        workspace=str(workspace),
+    )
+    run_id = "run-active"
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "conversation_id": "conversation-1",
+            "result": "not final",
+            "error": None,
+        },
+    )
+    goal["targets"] = {"alpha": run_id}
+    store.save_goal(goal["goal_id"], goal)
+
+    status = orchestrator.goal_status(goal["goal_id"])
+
+    assert status["targets"]["alpha"]["result"] is None
+    assert not (tmp_path / "state" / "runs" / run_id / "final-result.txt").exists()
 
 
 def test_goal_rejects_unknown_model_before_persistence(tmp_path):

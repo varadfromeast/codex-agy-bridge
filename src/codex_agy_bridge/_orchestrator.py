@@ -34,6 +34,7 @@ from codex_agy_bridge.run_request import (
 )
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
     GoalState,
     RunState,
 )
@@ -614,19 +615,7 @@ class RunnerOrchestrator:
         """
         state = self.load_state(run_id)
         conversation_id = state.get("conversation_id")
-        artifact_path = self._ensure_result_artifact(state)
-        result = None
-        if artifact_path and artifact_path.is_file():
-            total_bytes = artifact_path.stat().st_size
-            with artifact_path.open("rb") as handle:
-                preview_bytes = handle.read(RESULT_PREVIEW_BYTES)
-            result = {
-                "preview": preview_bytes.decode("utf-8", errors="replace"),
-                "total_bytes": total_bytes,
-                "complete": total_bytes <= RESULT_PREVIEW_BYTES,
-                "artifact_path": str(artifact_path),
-                "read_with": "agy_result_read",
-            }
+        result = self._result_metadata(state)
         return {
             "run_id": run_id,
             "status": state["status"],
@@ -649,6 +638,8 @@ class RunnerOrchestrator:
             raise ValueError("max_bytes must be at least 1")
         max_bytes = min(max_bytes, RESULT_READ_MAX_BYTES)
         state = self.load_state(run_id)
+        if state["status"] not in TERMINAL_STATUSES:
+            raise ValueError("result artifact is only available for terminal runs")
         artifact_path = self._ensure_result_artifact(state)
         if artifact_path is None or not artifact_path.is_file():
             raise ValueError("result artifact is unavailable")
@@ -912,6 +903,7 @@ class RunnerOrchestrator:
                 "error": state.get("error"),
                 "session_label": state.get("session_label"),
                 "tmux_session": state.get("tmux_session"),
+                "result": self._result_metadata(state),
             }
         statuses = {item["status"] for item in targets.values()}
         if statuses and statuses <= {"completed"}:
@@ -925,6 +917,23 @@ class RunnerOrchestrator:
         else:
             aggregate = "pending"
         return {**goal, "status": aggregate, "targets": targets}
+
+    def _result_metadata(self, state: RunState) -> dict[str, Any] | None:
+        if state["status"] not in TERMINAL_STATUSES:
+            return None
+        artifact_path = self._ensure_result_artifact(state)
+        if not artifact_path or not artifact_path.is_file():
+            return None
+        total_bytes = artifact_path.stat().st_size
+        with artifact_path.open("rb") as handle:
+            preview_bytes = handle.read(RESULT_PREVIEW_BYTES)
+        return {
+            "preview": preview_bytes.decode("utf-8", errors="replace"),
+            "total_bytes": total_bytes,
+            "complete": total_bytes <= RESULT_PREVIEW_BYTES,
+            "artifact_path": str(artifact_path),
+            "read_with": "agy_result_read",
+        }
 
     def open_terminal(self, run_id: str) -> dict[str, Any]:
         """Open a visible macOS Terminal attached to the run's Tmux session.
