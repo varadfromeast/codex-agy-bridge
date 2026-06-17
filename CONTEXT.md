@@ -149,8 +149,8 @@ Recent live MCP stress testing found that permission prompts can be invisible to
 `agy_run_wait` and `agy_goal(action="status")`, especially file-access prompts.
 The current mitigation is twofold: force dangerous permission-skip on every Run
 Request and improve prompt detection for the visible approval menu shape. Keep
-the TODO live defect open until a fresh MCP live run verifies file-access
-prompts no longer wedge sessions.
+the live defect open until a fresh MCP live run verifies file-access prompts no
+longer wedge sessions.
 
 Before calling the bridge production-stable, run another live stress pass that
 specifically checks:
