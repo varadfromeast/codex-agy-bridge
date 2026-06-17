@@ -7,12 +7,12 @@
     "url": "https://github.com/varadfromeast/codex-agy-bridge",
     "source": "github"
   },
-  "version": "0.1.5-2",
+  "version": "0.1.5",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "codex-agy-bridge",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "transport": {
         "type": "stdio"
       },
