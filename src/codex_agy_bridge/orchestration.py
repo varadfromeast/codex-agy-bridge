@@ -206,6 +206,40 @@ def transcript(
     )
 
 
+def observe(
+    run_ids: list[str],
+    *,
+    after: dict[str, Any] | None = None,
+    include_terminal_tail: bool = False,
+) -> dict[str, Any]:
+    """Return merged observable state for one or more runs."""
+    return _orchestrator.observe(
+        run_ids,
+        after=after,
+        include_terminal_tail=include_terminal_tail,
+    )
+
+
+def terminal_snapshot(
+    run_id: str,
+    *,
+    max_chars: int = 12_000,
+    timeout_seconds: float = 0.5,
+) -> dict[str, Any]:
+    """Return bounded raw tmux pane and log tails for one run.
+
+    This is the direct inspection lane for suspicious waits or classifier
+    misses. It does not classify prompts, mutate run state, or append events;
+    callers should inspect the returned text and use agy_run_input when
+    the pane needs input.
+    """
+    return _orchestrator.terminal_snapshot(
+        run_id,
+        max_chars=max_chars,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def result(run_id: str) -> dict[str, Any]:
     """Fetch final response and completion state.
 
@@ -265,7 +299,7 @@ def create_goal(
     objective: str,
     workspace: str,
     max_parallel: int = 2,
-    model: str = DEFAULT_MODEL,
+    model: str | None = DEFAULT_MODEL,
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
     dangerously_skip_permissions: bool = True,
@@ -300,7 +334,7 @@ def start_goal_target(
     target_name: str,
     prompt: str,
     timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool | None = None,
+    dangerously_skip_permissions: bool | None = True,
     sandbox: bool | None = None,
     additional_directories: list[str] | None = None,
 ) -> RunState:
@@ -352,15 +386,30 @@ def open_terminal(run_id: str) -> dict[str, Any]:
     return _orchestrator.open_terminal(run_id)
 
 
-def send_text(run_id: str, text: str, *, enter: bool = True) -> dict[str, Any]:
+def send_text(
+    run_id: str,
+    text: str,
+    *,
+    enter: bool = True,
+    expected_event_key: str | None = None,
+    expected_transcript_step: int | None = None,
+) -> dict[str, Any]:
     """Send keystrokes/command to the run's Tmux session.
 
     Args:
         run_id: The unique run identifier.
         text: The text to send.
         enter: Whether to press Enter after the text.
+        expected_event_key: Optional event cursor observed before deciding.
+        expected_transcript_step: Optional transcript step observed before deciding.
 
     Returns:
         Dict indicating transmission status.
     """
-    return _orchestrator.send_text(run_id, text, enter=enter)
+    return _orchestrator.send_text(
+        run_id,
+        text,
+        enter=enter,
+        expected_event_key=expected_event_key,
+        expected_transcript_step=expected_transcript_step,
+    )

@@ -34,17 +34,26 @@ def test_tmux_session_lifecycle(tmp_path: Path):
         mock_run.assert_any_call(
             ["tmux", "kill-session", "-t", "agy-run-3"],
             check=False,
+            timeout=2.0,
+            capture_output=True,
+            text=True,
         )
 
         # Test send_input
         session.send_input("yes", enter=True)
+        tmux_send_kwargs = {
+            "capture_output": True,
+            "text": True,
+            "check": False,
+            "timeout": 2.0,
+        }
         mock_run.assert_any_call(
             ["tmux", "send-keys", "-t", "agy-run-3", "-l", "--", "yes"],
-            check=True,
+            **tmux_send_kwargs,
         )
         mock_run.assert_any_call(
             ["tmux", "send-keys", "-t", "agy-run-3", "Enter"],
-            check=True,
+            **tmux_send_kwargs,
         )
 
 

@@ -7,14 +7,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from codex_agy_bridge import core, session_events
+from codex_agy_bridge import core, prompt_detector, run_control_snapshot, session_events
 from codex_agy_bridge.state import TERMINAL_STATUSES, RunState
 
 WaitCondition = Literal["any_event", "any_attention", "any_terminal", "all_terminal"]
 
 ATTENTION_EVENTS = {
     "needs_attention",
-    "result_ready",
+    "mcp_input_failed",
+    "progress_stalled",
     "run_completed",
     "run_failed",
     "run_canceled",
@@ -37,12 +38,46 @@ def wait_for_runs(
     if condition not in {"any_event", "any_attention", "any_terminal", "all_terminal"}:
         raise ValueError(f"unsupported wait condition: {condition}")
     after = dict(after or {})
-    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    timeout_seconds = max(0.0, timeout_seconds)
+    started_at = time.monotonic()
+    deadline = started_at + timeout_seconds
+    watchdog_deadline = started_at + timeout_seconds + 2.0
     poll_interval = 0.1
+    prompt_capture_timeout_seconds = _prompt_capture_timeout(
+        timeout_seconds,
+        run_count=len(run_dirs),
+    )
+    detectors = _prompt_detectors(
+        run_dirs,
+        state_root=state_root,
+        load_state=load_state,
+        capture_timeout_seconds=prompt_capture_timeout_seconds,
+    )
 
     while True:
         events = _matching_events(run_dirs, condition=condition, after=after)
-        runs = _compact_runs(run_dirs, state_root=state_root, load_state=load_state)
+        runs = _compact_runs(
+            run_dirs,
+            state_root=state_root,
+            load_state=load_state,
+            prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
+        )
+        if condition == "any_attention":
+            attention_events = _ensure_attention_events(run_dirs, runs)
+            if attention_events:
+                runs = _compact_runs(
+                    run_dirs,
+                    state_root=state_root,
+                    load_state=load_state,
+                    prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
+                )
+                return _result(
+                    condition,
+                    True,
+                    _merge_events(events, attention_events),
+                    runs,
+                )
+        _observe_current_prompts(detectors)
         matched = bool(events)
         if condition == "all_terminal":
             matched = bool(runs) and all(
@@ -52,10 +87,64 @@ def wait_for_runs(
                 events = _latest_terminal_events(run_dirs)
         if matched:
             return _result(condition, True, events, runs)
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline or now >= watchdog_deadline:
             return _result(condition, False, [], runs)
-        time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+        time.sleep(min(poll_interval, max(0.0, deadline - now)))
         poll_interval = min(1.0, 0.5 if poll_interval >= 0.1 else poll_interval * 2)
+
+
+def _prompt_detectors(
+    run_dirs: dict[str, Path],
+    *,
+    state_root: Path | None,
+    load_state: Callable[[str], RunState] | None,
+    capture_timeout_seconds: float,
+) -> dict[str, prompt_detector.PromptDetector]:
+    detectors: dict[str, prompt_detector.PromptDetector] = {}
+    for run_id, run_dir in run_dirs.items():
+        try:
+            state = (
+                load_state(run_id)
+                if load_state is not None
+                else core.load_state(run_id, state_root=state_root)
+            )
+        except Exception:
+            state = {}
+        detectors[run_id] = prompt_detector.PromptDetector(
+            run_dir,
+            tmux_session=state.get("tmux_session"),
+            capture_timeout_seconds=capture_timeout_seconds,
+        )
+    return detectors
+
+
+def _prompt_capture_timeout(timeout_seconds: float, *, run_count: int) -> float:
+    if timeout_seconds <= 0 or run_count < 1:
+        return 0.0
+    return min(0.2, max(0.0, timeout_seconds / max(run_count * 20, 1)))
+
+
+def _observe_current_prompts(
+    detectors: dict[str, prompt_detector.PromptDetector],
+) -> None:
+    for detector in detectors.values():
+        event = detector.inspect()
+        if event is None or event.kind not in {"needs_attention", "attention_cleared"}:
+            continue
+        payload: dict[str, Any] = {
+            "source": event.source,
+            "dedupe_key": event.dedupe_key,
+            "observed": {
+                "activity_state": event.activity_state,
+            },
+        }
+        if event.kind == "needs_attention" and event.attention is not None:
+            payload["category"] = event.attention.get("reason", "approval_prompt")
+            payload["severity"] = "action_required"
+            payload["observed"].update(event.attention)
+            payload["observed"]["suggested_inputs"] = ["y", "n"]
+        session_events.append_event(detector.run_dir, event.kind, payload)
 
 
 def _matching_events(
@@ -68,7 +157,7 @@ def _matching_events(
     for run_id, run_dir in run_dirs.items():
         latest = session_events.latest_event_id(run_dir)
         cursor = after.get(run_id)
-        if latest is None or (cursor is not None and latest <= cursor):
+        if latest is None:
             continue
         for event in session_events.read_events(run_dir, after_event_id=cursor):
             if _event_matches(event, condition):
@@ -98,6 +187,7 @@ def _compact_runs(
     *,
     state_root: Path | None,
     load_state: Callable[[str], RunState] | None,
+    prompt_capture_timeout_seconds: float,
 ) -> dict[str, dict[str, Any]]:
     runs: dict[str, dict[str, Any]] = {}
     for run_id, run_dir in run_dirs.items():
@@ -111,19 +201,118 @@ def _compact_runs(
             error = state.get("error")
             conversation_id = state.get("conversation_id")
             finished_at = state.get("finished_at")
+            snapshot = run_control_snapshot.RunControlSnapshot.from_run(
+                run_id,
+                state_root=state_root,
+                load_state=load_state,
+                prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
+            )
         except Exception as error_value:
             status = "failed"
             error = f"Run state unavailable: {error_value}"
             conversation_id = None
             finished_at = None
+            snapshot = {
+                "lifecycle_status": "failed",
+                "activity_state": "terminal",
+                "attention": {
+                    "required": False,
+                    "reason": None,
+                    "prompt": None,
+                    "suggested_inputs": [],
+                },
+                "can_send_text": False,
+                "latest_event_id": session_events.latest_event_id(run_dir),
+                "latest_event_key": session_events.latest_event_key(run_dir),
+                "latest_transcript_step": None,
+                "terminal_tail_available": False,
+            }
         runs[run_id] = {
             "status": status,
-            "latest_event_id": session_events.latest_event_id(run_dir),
+            "lifecycle_status": snapshot["lifecycle_status"],
+            "activity_state": snapshot["activity_state"],
+            "attention_required": snapshot["attention"]["required"],
+            "attention": snapshot["attention"],
+            "can_send_text": snapshot["can_send_text"],
+            "latest_event_id": snapshot["latest_event_id"],
+            "latest_event_key": snapshot["latest_event_key"],
+            "latest_transcript_step": snapshot["latest_transcript_step"],
+            "terminal_tail_available": snapshot["terminal_tail_available"],
             "conversation_id": conversation_id,
             "error": error,
             "finished_at": finished_at,
         }
     return runs
+
+
+def _ensure_attention_events(
+    run_dirs: dict[str, Path],
+    runs: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for run_id, run in runs.items():
+        attention = run.get("attention")
+        if not isinstance(attention, dict) or not attention.get("required"):
+            continue
+        run_dir = run_dirs[run_id]
+        existing = _active_needs_attention_event(run_dir)
+        if existing is not None:
+            events.append(existing)
+            continue
+        prompt = attention.get("prompt")
+        suggested_inputs = attention.get("suggested_inputs")
+        events.append(
+            session_events.append_event(
+                run_dir,
+                "needs_attention",
+                {
+                    "category": attention.get("reason") or "approval_prompt",
+                    "severity": "action_required",
+                    "source": attention.get("source") or "bridge",
+                    "dedupe_key": attention.get("dedupe_key")
+                    or f"needs_attention:{run_id}",
+                    "observed": {
+                        "activity_state": "awaiting_user",
+                        "prompt": prompt if isinstance(prompt, str) else None,
+                        "suggested_inputs": (
+                            suggested_inputs
+                            if isinstance(suggested_inputs, list)
+                            and all(isinstance(item, str) for item in suggested_inputs)
+                            else []
+                        ),
+                    },
+                },
+            )
+        )
+    return events
+
+
+def _active_needs_attention_event(run_dir: Path) -> dict[str, Any] | None:
+    for event in reversed(session_events.read_events(run_dir, limit=10_000)):
+        kind = event.get("kind")
+        if kind == "attention_cleared":
+            return None
+        if kind == "needs_attention":
+            return event
+    return None
+
+
+def _merge_events(
+    first: list[dict[str, Any]],
+    second: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for event in [*first, *second]:
+        event_id = event.get("event_id")
+        by_id[str(event_id) if event_id is not None else str(id(event))] = event
+    events = list(by_id.values())
+    events.sort(
+        key=lambda event: (
+            str(event.get("created_at", "")),
+            str(event.get("event_id", "")),
+        ),
+    )
+    return events
 
 
 def _latest_terminal_events(run_dirs: dict[str, Path]) -> list[dict[str, Any]]:

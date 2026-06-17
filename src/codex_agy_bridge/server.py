@@ -30,27 +30,20 @@ class StrictFastMCP(FastMCP):
 mcp = StrictFastMCP(
     "codex-agy-bridge",
     instructions=(
-        "Use agy_start for a new foreground Antigravity task and retain its "
-        "run_id. "
-        "Use agy_wait to block for sparse lifecycle notifications instead of "
-        "polling agy_status. Inspect incremental work with agy_transcript only "
-        "when a notification says it is worth attention. "
-        "Use agy_result only after terminal status. Use agy_continue with the "
-        "exact conversation_id for follow-up work. For bounded parallel work, "
-        "call agy_goal_create once, call agy_goal_target_start once per unique "
-        "named target, then poll agy_goal_status for the aggregate result. "
-        "Goals are provided by the MCP scheduler, not by Antigravity. "
-        "Use agy_cancel to stop an active run. Targets support "
-        "agy_target_open_terminal and agy_target_send_text. Use "
-        "agy_interactive_start sparingly when subsequent text must be consumed "
-        "as open-ended conversation input. agy_target_send_text sends input "
-        "directly to live foreground tmux panes and returns sent=false with "
-        "status context after the pane closes. "
-        "Use agy_models and agy_doctor for discovery. "
-        "Antigravity is agentic and the workspace is not a security boundary."
+        "Use the lean tools by default. agy_run_start starts or continues a "
+        "foreground Antigravity run and returns a run_id. agy_run_wait blocks "
+        "for sparse lifecycle, attention, terminal, and progress-stalled "
+        "events. agy_run_observe reads status, transcript, merged state, or raw "
+        "terminal evidence. agy_run_input sends text only when optional event "
+        "or transcript preconditions still match; stale writes are rejected "
+        "with fresh context. agy_run_result reads final result metadata or "
+        "bounded chunks. agy_goal manages bridge scheduler goals and targets. "
+        "agy_admin handles diagnostics, models, plugins, and changelog. "
+        "Antigravity is agentic and the workspace is not a security boundary. "
+        "The bridge always enables Antigravity's dangerous permission-skip "
+        "policy so unattended runs do not stall on CLI approval prompts."
     ),
 )
-
 
 def create_run(
     *,
@@ -84,171 +77,57 @@ def create_run(
 
 
 @mcp.tool()
-def agy_start(
+def agy_run_start(
     prompt: str,
     workspace: str,
     timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    mode: str = "task",
     dangerously_skip_permissions: bool = True,
     model: str | None = DEFAULT_MODEL,
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Start a new asynchronous Antigravity task.
+    """Start or continue one foreground Antigravity Run.
 
-    The call returns immediately with a run_id. Antigravity runs as a visible
-    foreground CLI in tmux, and foreground human-attachable runs auto-open in
-    Terminal.app while the bridge owns lifecycle, completion detection, and
-    result cleanup. Enabling dangerously_skip_permissions permits unattended
-    commands and file edits with the current user's privileges. sandbox and
-    additional_directories are CLI policy hints forwarded to Antigravity, not
-    filesystem containment or a bridge security boundary.
+    mode="task" starts a normal bridge-owned task. mode="interactive" starts a
+    persistent conversation session that should be used sparingly. Supplying
+    conversation_id continues that exact Antigravity conversation. The bridge
+    always enables dangerous permission-skip; the flag is accepted only for
+    compatibility.
     """
-    return public_state(
-        cast(
-            dict[str, Any],
-            orchestration.create_run(
-                prompt=prompt,
-                workspace=workspace,
-                timeout_seconds=timeout_seconds,
-                conversation_id=None,
-                dangerously_skip_permissions=dangerously_skip_permissions,
-                model=model,
-                sandbox=sandbox,
-                additional_directories=additional_directories,
-            ),
+    if mode not in {"task", "interactive"}:
+        raise ValueError("mode must be 'task' or 'interactive'")
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "workspace": workspace,
+        "timeout_seconds": timeout_seconds,
+        "conversation_id": conversation_id,
+        "dangerously_skip_permissions": dangerously_skip_permissions,
+        "model": model,
+        "sandbox": sandbox,
+        "additional_directories": additional_directories,
+    }
+    if mode == "interactive":
+        kwargs.update(
+            {
+                "execution_mode": "interactive",
+                "agent_mode": "conversation",
+                "execution_surface": "foreground",
+                "human_attachable": True,
+            }
         )
-    )
+    return public_state(cast(dict[str, Any], orchestration.create_run(**kwargs)))
 
 
 @mcp.tool()
-def agy_interactive_start(
-    prompt: str,
-    workspace: str,
-    timeout_seconds: int = 3600,
-    dangerously_skip_permissions: bool = False,
-    model: str | None = DEFAULT_MODEL,
-    sandbox: bool = True,
-    additional_directories: list[str] | None = None,
-) -> dict[str, Any]:
-    """EXPERIMENTAL: start a persistent interactive Antigravity session.
-
-    This should not be used often. The bridge starts a foreground conversation
-    session that stays alive after completed responses. Use agy_target_send_text
-    to send subsequent input directly to the visible tmux pane and agy_cancel to
-    close it. sandbox and additional_directories are CLI policy hints forwarded
-    to Antigravity, not filesystem containment or a bridge security boundary.
-    """
-    return public_state(
-        cast(
-            dict[str, Any],
-            orchestration.create_run(
-                prompt=prompt,
-                workspace=workspace,
-                timeout_seconds=timeout_seconds,
-                conversation_id=None,
-                dangerously_skip_permissions=dangerously_skip_permissions,
-                model=model,
-                sandbox=sandbox,
-                additional_directories=additional_directories,
-                execution_mode="interactive",
-                agent_mode="conversation",
-                execution_surface="foreground",
-                human_attachable=True,
-            ),
-        )
-    )
-
-
-@mcp.tool()
-def agy_continue(
-    conversation_id: str,
-    prompt: str,
-    workspace: str,
-    timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool = True,
-    model: str | None = DEFAULT_MODEL,
-    sandbox: bool = False,
-    additional_directories: list[str] | None = None,
-) -> dict[str, Any]:
-    """Continue an exact conversation.
-
-    sandbox and additional_directories are CLI policy hints forwarded to
-    Antigravity, not filesystem containment or a bridge security boundary.
-    """
-    return public_state(
-        cast(
-            dict[str, Any],
-            orchestration.create_run(
-                prompt=prompt,
-                workspace=workspace,
-                timeout_seconds=timeout_seconds,
-                conversation_id=conversation_id,
-                dangerously_skip_permissions=dangerously_skip_permissions,
-                model=model,
-                sandbox=sandbox,
-                additional_directories=additional_directories,
-            ),
-        )
-    )
-
-
-@mcp.tool()
-def agy_status(run_id: str, compact: bool = True) -> dict[str, Any]:
-    """Return run status, compact by default."""
-    return orchestration.status(run_id, compact=compact)
-
-
-@mcp.tool()
-def agy_transcript(
-    run_id: str,
-    after_step: int = -1,
-    limit: int = 12,
-    include_content: bool = False,
-    max_content_chars: int = 500,
-) -> dict[str, Any]:
-    """Read bounded progress events; raw content is opt-in."""
-    return orchestration.transcript(
-        run_id,
-        after_step=after_step,
-        limit=limit,
-        include_content=include_content,
-        max_content_chars=max_content_chars,
-    )
-
-
-@mcp.tool()
-def agy_result(run_id: str) -> dict[str, Any]:
-    """Return terminal status and compact final-result metadata."""
-    return orchestration.result(run_id)
-
-
-@mcp.tool()
-def agy_result_read(
-    run_id: str,
-    offset_bytes: int = 0,
-    max_bytes: int = 65_536,
-) -> dict[str, Any]:
-    """Read a bounded byte chunk from a Run's final result artifact."""
-    return orchestration.result_read(
-        run_id,
-        offset_bytes=offset_bytes,
-        max_bytes=max_bytes,
-    )
-
-
-@mcp.tool()
-def agy_wait(
+def agy_run_wait(
     run_ids: list[str],
     condition: str = "any_attention",
     after: dict[str, str] | None = None,
     timeout_seconds: int = 900,
 ) -> dict[str, Any]:
-    """Block until selected Runs emit sparse lifecycle notifications.
-
-    Use this instead of repeated status polling. Timeout returns
-    matched=false rather than raising. Conditions are any_event,
-    any_attention, any_terminal, and all_terminal.
-    """
+    """Wait for sparse Run events instead of repeatedly polling status."""
     return orchestration.wait(
         run_ids,
         condition=condition,
@@ -258,130 +137,176 @@ def agy_wait(
 
 
 @mcp.tool()
-def agy_cancel(run_id: str) -> dict[str, Any]:
-    """Request cancellation and terminate the active Antigravity process group."""
+def agy_run_observe(
+    run_ids: list[str],
+    view: str = "full",
+    after: dict[str, Any] | None = None,
+    include_terminal_tail: bool = False,
+    after_step: int = -1,
+    limit: int = 12,
+    include_content: bool = False,
+    max_content_chars: int = 500,
+    max_chars: int = 12_000,
+    timeout_seconds: float = 0.5,
+    compact: bool = True,
+) -> dict[str, Any]:
+    """Inspect Run state through one lean observation surface.
+
+    view="full" returns merged observable state for all run_ids. view="status",
+    "transcript", or "terminal" requires exactly one run_id and returns the
+    corresponding focused view.
+    """
+    if not run_ids:
+        raise ValueError("run_ids must not be empty")
+    if view == "full":
+        return orchestration.observe(
+            run_ids,
+            after=after,
+            include_terminal_tail=include_terminal_tail,
+        )
+    if len(run_ids) != 1:
+        raise ValueError(f"view={view!r} requires exactly one run_id")
+    run_id = run_ids[0]
+    if view == "status":
+        return orchestration.status(run_id, compact=compact)
+    if view == "transcript":
+        return orchestration.transcript(
+            run_id,
+            after_step=after_step,
+            limit=limit,
+            include_content=include_content,
+            max_content_chars=max_content_chars,
+        )
+    if view == "terminal":
+        return orchestration.terminal_snapshot(
+            run_id,
+            max_chars=max_chars,
+            timeout_seconds=timeout_seconds,
+        )
+    raise ValueError("view must be full, status, transcript, or terminal")
+
+
+@mcp.tool()
+def agy_run_input(
+    run_id: str,
+    text: str,
+    enter: bool = True,
+    expected_event_key: str | None = None,
+    expected_transcript_step: int | None = None,
+) -> dict[str, Any]:
+    """Send input to a live foreground Run with optional stale-write guards."""
+    return orchestration.send_text(
+        run_id,
+        text,
+        enter=enter,
+        expected_event_key=expected_event_key,
+        expected_transcript_step=expected_transcript_step,
+    )
+
+
+@mcp.tool()
+def agy_run_cancel(run_id: str) -> dict[str, Any]:
+    """Cancel one active Run and terminate its Antigravity process group."""
     return orchestration.cancel(run_id)
 
 
 @mcp.tool()
-def agy_models(refresh: bool = False) -> dict[str, Any]:
-    """List models currently available to the installed Antigravity CLI."""
-    return diagnostics.models(refresh=refresh)
-
-
-@mcp.tool()
-def agy_doctor(run_id: str | None = None) -> dict[str, Any]:
-    """Return bounded, read-only bridge and Antigravity diagnostics."""
-    return diagnostics.doctor(run_id=run_id)
-
-
-@mcp.tool()
-def agy_plugins() -> dict[str, Any]:
-    """List imported Antigravity plugins without changing configuration."""
-    return diagnostics.plugins()
-
-
-@mcp.tool()
-def agy_plugin_validate(path: str, workspace: str) -> dict[str, Any]:
-    """Validate an existing plugin directory contained by workspace."""
-    return diagnostics.validate_plugin(path=path, workspace=workspace)
-
-
-@mcp.tool()
-def agy_changelog() -> dict[str, str]:
-    """Return the installed Antigravity CLI changelog."""
-    return diagnostics.changelog()
-
-
-@mcp.tool()
-def agy_goal_create(
-    objective: str,
-    workspace: str,
-    max_parallel: StrictInt = 2,
-    model: str = DEFAULT_MODEL,
-    sandbox: bool = False,
-    additional_directories: list[str] | None = None,
-    dangerously_skip_permissions: bool = True,
+def agy_run_result(
+    run_id: str,
+    offset_bytes: int | None = None,
+    max_bytes: int = 65_536,
 ) -> dict[str, Any]:
-    """Create an MCP scheduler container for bounded parallel targets.
-
-    Goals and target aggregation are bridge scheduling features, not an
-    Antigravity feature and not shared native conversation context. sandbox and
-    additional_directories are CLI policy hints forwarded independently to
-    each target, not filesystem containment or a bridge security boundary.
-    """
-    return cast(
-        dict[str, Any],
-        orchestration.create_goal(
-            objective=objective,
-            workspace=workspace,
-            max_parallel=max_parallel,
-            model=model,
-            sandbox=sandbox,
-            additional_directories=additional_directories,
-            dangerously_skip_permissions=dangerously_skip_permissions,
-        ),
+    """Read final result metadata, or a bounded chunk when offset_bytes is set."""
+    if offset_bytes is None:
+        return orchestration.result(run_id)
+    return orchestration.result_read(
+        run_id,
+        offset_bytes=offset_bytes,
+        max_bytes=max_bytes,
     )
 
 
 @mcp.tool()
-def agy_goal_target_start(
-    goal_id: str,
-    target_name: str,
-    prompt: str,
+def agy_goal(
+    action: str,
+    objective: str | None = None,
+    workspace: str | None = None,
+    goal_id: str | None = None,
+    target_name: str | None = None,
+    prompt: str | None = None,
     timeout_seconds: int = 900,
-    dangerously_skip_permissions: bool | None = None,
+    max_parallel: StrictInt = 2,
+    model: str | None = DEFAULT_MODEL,
     sandbox: bool | None = None,
     additional_directories: list[str] | None = None,
+    dangerously_skip_permissions: bool | None = True,
 ) -> dict[str, Any]:
-    """Start one independent target managed by the MCP scheduler.
-
-    Goal targets are a bridge scheduling feature, not an Antigravity feature;
-    targets do not gain shared native conversation context. sandbox and
-    additional_directories are CLI policy hints forwarded to Antigravity, not
-    filesystem containment or a bridge security boundary.
-    """
-    return public_state(
-        cast(
+    """Manage bridge scheduler goals with actions create, start_target, status."""
+    if action == "create":
+        if objective is None or workspace is None:
+            raise ValueError("objective and workspace are required for create")
+        return cast(
             dict[str, Any],
-            orchestration.start_goal_target(
-                goal_id=goal_id,
-                target_name=target_name,
-                prompt=prompt,
-                timeout_seconds=timeout_seconds,
-                dangerously_skip_permissions=dangerously_skip_permissions,
-                sandbox=sandbox,
+            orchestration.create_goal(
+                objective=objective,
+                workspace=workspace,
+                max_parallel=max_parallel,
+                model=model,
+                sandbox=bool(sandbox) if sandbox is not None else False,
                 additional_directories=additional_directories,
+                dangerously_skip_permissions=bool(dangerously_skip_permissions),
             ),
         )
-    )
+    if action == "start_target":
+        if goal_id is None or target_name is None or prompt is None:
+            raise ValueError(
+                "goal_id, target_name, and prompt are required for start_target"
+            )
+        return public_state(
+            cast(
+                dict[str, Any],
+                orchestration.start_goal_target(
+                    goal_id=goal_id,
+                    target_name=target_name,
+                    prompt=prompt,
+                    timeout_seconds=timeout_seconds,
+                    dangerously_skip_permissions=dangerously_skip_permissions,
+                    sandbox=sandbox,
+                    additional_directories=additional_directories,
+                ),
+            )
+        )
+    if action == "status":
+        if goal_id is None:
+            raise ValueError("goal_id is required for status")
+        return orchestration.goal_status(goal_id)
+    raise ValueError("action must be create, start_target, or status")
 
 
 @mcp.tool()
-def agy_goal_status(goal_id: str) -> dict[str, Any]:
-    """Return compact aggregate state for a goal and its targets."""
-    return orchestration.goal_status(goal_id)
-
-
-@mcp.tool()
-def agy_target_open_terminal(run_id: str) -> dict[str, Any]:
-    """Open Terminal.app attached to a target's persistent tmux session."""
-    return orchestration.open_terminal(run_id)
-
-
-@mcp.tool()
-def agy_target_send_text(
-    run_id: str,
-    text: str,
-    enter: bool = True,
+def agy_admin(
+    action: str,
+    run_id: str | None = None,
+    refresh: bool = False,
+    path: str | None = None,
+    workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Send input directly to a live foreground Run.
-
-    Input is recorded as MCP-originated and delivered to the run's tmux pane.
-    If the foreground session has already closed, the response reports
-    sent=false along with the latest known run status and transcript step.
-    """
-    return orchestration.send_text(run_id, text, enter=enter)
+    """Run bounded diagnostics and metadata actions for the bridge and agy CLI."""
+    if action == "doctor":
+        return diagnostics.doctor(run_id=run_id)
+    if action == "models":
+        return diagnostics.models(refresh=refresh)
+    if action == "plugins":
+        return diagnostics.plugins()
+    if action == "plugin_validate":
+        if path is None or workspace is None:
+            raise ValueError("path and workspace are required for plugin_validate")
+        return diagnostics.validate_plugin(path=path, workspace=workspace)
+    if action == "changelog":
+        return diagnostics.changelog()
+    raise ValueError(
+        "action must be doctor, models, plugins, plugin_validate, or changelog"
+    )
 
 
 def main() -> None:

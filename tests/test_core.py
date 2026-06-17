@@ -325,7 +325,7 @@ def test_run_provider_health_reports_response_timeout_action(tmp_path):
     health = core.run_provider_health(tmp_path)
 
     assert health["status"] == "response_timeout"
-    assert "agy_target_send_text" in health["action"]
+    assert "agy_run_input" in health["action"]
 
 
 

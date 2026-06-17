@@ -7,7 +7,39 @@ import shlex
 import signal
 import subprocess
 import time
+from contextlib import suppress
 from pathlib import Path
+
+DEFAULT_TMUX_TIMEOUT_SECONDS = 2.0
+
+
+class TmuxCommandError(RuntimeError):
+    """Structured tmux command failure."""
+
+    def __init__(
+        self,
+        *,
+        command: list[str],
+        reason: str,
+        returncode: int | None = None,
+        stderr: str | None = None,
+    ) -> None:
+        self.command = command
+        self.reason = reason
+        self.returncode = returncode
+        self.stderr = stderr
+        super().__init__(_tmux_error_message(command, reason, returncode, stderr))
+
+
+def _tmux_error_message(
+    command: list[str],
+    reason: str,
+    returncode: int | None,
+    stderr: str | None,
+) -> str:
+    suffix = f" returncode={returncode}" if returncode is not None else ""
+    detail = f": {stderr.strip()}" if stderr else ""
+    return f"tmux command {reason}{suffix}: {shlex.join(command)}{detail}"
 
 
 def session_name(run_id: str) -> str:
@@ -82,6 +114,9 @@ def launch(
             script,
         ],
         check=True,
+        timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+        capture_output=True,
+        text=True,
     )
     try:
         subprocess.run(
@@ -94,6 +129,9 @@ def launch(
                 f"cat >> {shlex.quote(str(terminal_log))}",
             ],
             check=True,
+            timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
         )
     except Exception:
         stop(session)
@@ -102,35 +140,60 @@ def launch(
 
 def attach(session: str, *, check: bool = False) -> None:
     script = f"tmux attach-session -t {session}"
-    subprocess.run(
-        [
-            "osascript",
-            "-e",
-            f'tell application "Terminal" to do script "{script}"',
-            "-e",
-            'tell application "Terminal" to activate',
-        ],
-        check=check,
-    )
+    command = [
+        "osascript",
+        "-e",
+        f'tell application "Terminal" to do script "{script}"',
+        "-e",
+        'tell application "Terminal" to activate',
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TmuxCommandError(command=command, reason="timeout") from error
+    except EOFError as error:
+        raise TmuxCommandError(command=command, reason="eof") from error
+    if check and completed.returncode != 0:
+        raise TmuxCommandError(
+            command=command,
+            reason="failed",
+            returncode=completed.returncode,
+            stderr=completed.stderr,
+        )
 
 
 def alive(session: str) -> bool:
-    return (
-        subprocess.run(
+    try:
+        completed = subprocess.run(
             ["tmux", "has-session", "-t", session],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             check=False,
-        ).returncode
-        == 0
-    )
+            timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, EOFError):
+        return False
+    return completed.returncode == 0
 
 
 def stop(session: str) -> None:
     pane_pid = _pane_pid(session)
     descendants = _descendant_pids(pane_pid) if pane_pid is not None else []
     _signal_processes(descendants, signal.SIGTERM)
-    subprocess.run(["tmux", "kill-session", "-t", session], check=False)
+    with suppress(subprocess.TimeoutExpired, EOFError):
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session],
+            check=False,
+            timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
     deadline = time.monotonic() + 2
     survivors = descendants
     while survivors and time.monotonic() < deadline:
@@ -141,12 +204,16 @@ def stop(session: str) -> None:
 
 
 def _pane_pid(session: str) -> int | None:
-    completed = subprocess.run(
-        ["tmux", "list-panes", "-t", session, "-F", "#{pane_pid}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, EOFError):
+        return None
     if (
         completed is None
         or completed.returncode != 0
@@ -215,21 +282,80 @@ def _process_alive(pid: int) -> bool:
     return True
 
 
-def send_text(session: str, text: str, *, enter: bool = True) -> None:
+def capture_pane(
+    session: str,
+    *,
+    timeout_seconds: float = DEFAULT_TMUX_TIMEOUT_SECONDS,
+) -> str:
+    command = ["tmux", "capture-pane", "-p", "-t", session]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TmuxCommandError(command=command, reason="timeout") from error
+    except EOFError as error:
+        raise TmuxCommandError(command=command, reason="eof") from error
+    if completed.returncode != 0:
+        raise TmuxCommandError(
+            command=command,
+            reason="failed",
+            returncode=completed.returncode,
+            stderr=completed.stderr,
+        )
+    return completed.stdout
+
+
+def _run_tmux_send_keys(command: list[str], *, timeout_seconds: float) -> None:
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TmuxCommandError(command=command, reason="timeout") from error
+    except EOFError as error:
+        raise TmuxCommandError(command=command, reason="eof") from error
+    if completed.returncode != 0:
+        raise TmuxCommandError(
+            command=command,
+            reason="failed",
+            returncode=completed.returncode,
+            stderr=completed.stderr,
+        )
+
+
+def send_text(
+    session: str,
+    text: str,
+    *,
+    enter: bool = True,
+    timeout_seconds: float = DEFAULT_TMUX_TIMEOUT_SECONDS,
+) -> None:
     if not alive(session):
         raise ValueError(f"tmux session is not running: {session}")
     if "\x00" in text:
         raise ValueError("text must not contain NUL bytes")
     lines = text.split("\n")
     for index, line in enumerate(lines):
-        subprocess.run(
+        _run_tmux_send_keys(
             ["tmux", "send-keys", "-t", session, "-l", "--", line],
-            check=True,
+            timeout_seconds=timeout_seconds,
         )
         if index < len(lines) - 1:
-            subprocess.run(
+            _run_tmux_send_keys(
                 ["tmux", "send-keys", "-t", session, "M-Enter"],
-                check=True,
+                timeout_seconds=timeout_seconds,
             )
     if enter:
-        subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True)
+        _run_tmux_send_keys(
+            ["tmux", "send-keys", "-t", session, "Enter"],
+            timeout_seconds=timeout_seconds,
+        )

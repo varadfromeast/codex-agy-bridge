@@ -14,7 +14,8 @@ def test_goal_parallel_limit_accepts_fifty_and_rejects_fifty_one(
     monkeypatch.setattr(core, "STATE_ROOT", state_root)
     monkeypatch.setattr(server, "STATE_ROOT", state_root)
 
-    goal = server.agy_goal_create(
+    goal = server.agy_goal(
+        action="create",
         objective="Run fifty targets",
         workspace=str(workspace),
         max_parallel=50,
@@ -22,19 +23,22 @@ def test_goal_parallel_limit_accepts_fifty_and_rejects_fifty_one(
 
     assert goal["max_parallel"] == 50
     with pytest.raises(ValueError, match="between 1 and 50"):
-        server.agy_goal_create(
+        server.agy_goal(
+            action="create",
             objective="Run fifty-one targets",
             workspace=str(workspace),
             max_parallel=51,
         )
     with pytest.raises(ValueError, match="integer between 1 and 50"):
-        server.agy_goal_create(
+        server.agy_goal(
+            action="create",
             objective="Reject boolean parallelism",
             workspace=str(workspace),
             max_parallel=True,
         )
     with pytest.raises(ValueError, match="model"):
-        server.agy_goal_create(
+        server.agy_goal(
+            action="create",
             objective="Reject empty model",
             workspace=str(workspace),
             model="",
@@ -48,7 +52,8 @@ def test_goal_collects_named_target_status(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "STATE_ROOT", state_root)
     monkeypatch.setattr(server, "STATE_ROOT", state_root)
 
-    goal = server.agy_goal_create(
+    goal = server.agy_goal(
+        action="create",
         objective="Compare extractors",
         workspace=str(workspace),
         max_parallel=2,
@@ -65,7 +70,7 @@ def test_goal_collects_named_target_status(tmp_path, monkeypatch):
     )
     core.update_goal(goal["goal_id"], targets={"docling": run_id})
 
-    status = server.agy_goal_status(goal["goal_id"])
+    status = server.agy_goal(action="status", goal_id=goal["goal_id"])
 
     assert status["status"] == "completed"
     assert status["targets"]["docling"]["run_id"] == run_id
@@ -78,7 +83,8 @@ def test_goal_with_canceled_targets_is_not_reported_pending(tmp_path, monkeypatc
     monkeypatch.setattr(core, "STATE_ROOT", state_root)
     monkeypatch.setattr(server, "STATE_ROOT", state_root)
 
-    goal = server.agy_goal_create(
+    goal = server.agy_goal(
+        action="create",
         objective="Cancel targets",
         workspace=str(workspace),
         max_parallel=2,
@@ -98,4 +104,6 @@ def test_goal_with_canceled_targets_is_not_reported_pending(tmp_path, monkeypatc
         targets={"completed": "run-1", "canceled": "run-2"},
     )
 
-    assert server.agy_goal_status(goal["goal_id"])["status"] == "canceled"
+    assert server.agy_goal(action="status", goal_id=goal["goal_id"])["status"] == (
+        "canceled"
+    )

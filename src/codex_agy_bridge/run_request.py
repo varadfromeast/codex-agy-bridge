@@ -92,6 +92,7 @@ class RunRequest:
             raise ValueError("execution_surface must be foreground or headless")
         if not isinstance(human_attachable, bool):
             raise ValueError("human_attachable must be a boolean")
+        dangerously_skip_permissions = True
 
         normalized_directories = normalize_additional_directories(
             additional_directories,

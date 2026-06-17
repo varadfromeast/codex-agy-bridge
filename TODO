@@ -6,6 +6,33 @@ Only direct calls through the running `mcp__codex_agy_bridge` server count
 toward this total. Repository tests are added only after a live call exposes a
 defect.
 
+## Open Live Defects
+
+- [ ] File-access permission prompts are not always detected as attention.
+  Live goal `goal-ecc9d7346d`, target `permission-write-tmp`, run
+  `2026-06-16T174805.846880+0000-d7d8f341` showed an Antigravity terminal
+  prompt asking to allow access to `/private/tmp/agy-bridge-stress-target-b.txt`,
+  but `agy_wait(condition="any_attention")` and `agy_goal_status` continued to
+  report `activity_state="starting"`, `attention_required=false`, and no
+  `needs_attention` event. The detector should classify file-access prompts the
+  same way it classified the command approval prompt in sibling run
+  `2026-06-16T174801.728355+0000-12bdb409`. Related final-status evidence:
+  terminal runs can retain stale `attention_required=true` after completion or
+  cancellation even though `can_send_text=false`.
+  Live re-test `goal-dbce26c887` verified the mitigation for the original
+  `/private/tmp` file-access wedge: `dangerously_skip_permissions=false` inputs
+  persisted as `true`, and target `forced-skip-write-tmp` completed without a
+  hidden prompt. Keep this item open because the same run exposed related live
+  attention/finalization gaps:
+  - target `control-fast`, run `2026-06-16T181925.432210+0000-2e4d7b07`,
+    rendered `control-fast-ok` in the terminal but failed by hard timeout
+    without a final result;
+  - target `send-text-shell-read`, run
+    `2026-06-16T181930.476775+0000-27da8e64`, accepted
+    `agy_target_send_text` delivery events but remained running after the
+    provider showed a feedback prompt (`How's the CLI experience so far?`) that
+    was not classified as attention.
+
 ## Live Batch 1: API Error Isolation And Goal Validation
 
 - [x] 01. Unknown run status returns a bounded tool error.

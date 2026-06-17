@@ -245,7 +245,7 @@ def run_provider_health(directory: Path) -> dict[str, Any]:
             "status": "response_timeout",
             "action": (
                 "If the visible terminal is waiting for confirmation, call "
-                "agy_target_send_text with text='yes'."
+                "agy_run_input with text='yes'."
             ),
         }
     return health

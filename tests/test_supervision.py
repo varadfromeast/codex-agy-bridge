@@ -6,6 +6,17 @@ from codex_agy_bridge import interactive_input, runner, session_events
 from codex_agy_bridge.supervision import RunSupervisor
 
 
+class FakeClock:
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
 def test_supervisor_classifies_successful_exit(monkeypatch, tmp_path):
     state = {
         "run_id": "run-1",
@@ -77,6 +88,68 @@ def test_supervisor_launch_emits_run_started(monkeypatch, tmp_path):
     assert events[-1]["kind"] == "run_started"
     assert events[-1]["status"] == "running"
     assert updates[-1]["status"] == "running"
+
+
+def test_supervisor_emits_progress_stalled_after_transcript_idle(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "requested_conversation_id": "conversation-1",
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    clock = FakeClock(100.0)
+    polls = [
+        [
+            {
+                "step_index": 7,
+                "source": "MODEL",
+                "type": "RUN_COMMAND",
+                "status": "RUNNING",
+            }
+        ],
+        [],
+    ]
+
+    class FakeHarvester:
+        latest_response = None
+
+        def __init__(self, _conversation_id, _path):
+            pass
+
+        def poll(self):
+            return polls.pop(0) if polls else []
+
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr("codex_agy_bridge.supervision.time.monotonic", clock)
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.TranscriptHarvester",
+        FakeHarvester,
+    )
+    supervisor = RunSupervisor("run-1")
+    supervisor.progress_stall_seconds = 30.0
+
+    supervisor._observe_conversation()
+    clock.advance(31.0)
+    supervisor._observe_conversation()
+    supervisor._observe_progress_stall()
+    supervisor._observe_progress_stall()
+
+    events = session_events.read_events(tmp_path)
+    stalled_events = [event for event in events if event["kind"] == "progress_stalled"]
+    assert len(stalled_events) == 1
+    assert stalled_events[0]["category"] == "progress"
+    assert stalled_events[0]["severity"] == "warning"
+    assert stalled_events[0]["observed"]["latest_transcript_step"] == 7
+    assert stalled_events[0]["observed"]["idle_seconds"] == 31
+    assert stalled_events[0]["observed"]["suggested_next_tool"] == (
+        "agy_terminal_snapshot"
+    )
 
 
 def test_supervisor_classifies_nonzero_cli_exit(monkeypatch, tmp_path):
@@ -472,6 +545,57 @@ def test_supervisor_polls_once_for_progress_and_completion(monkeypatch, tmp_path
     assert polls == [True]
     assert rendered == [{"step_index": 7}]
     assert supervisor._response() == "result DONE_MARKER"
+
+
+def test_supervisor_emits_attention_for_stable_approval_prompt(monkeypatch, tmp_path):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "requested_conversation_id": "conversation-1",
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    now = [0.0]
+
+    class FakeHarvester:
+        latest_response = None
+
+        def __init__(self, _conversation_id, _path):
+            pass
+
+        def poll(self):
+            return [{"content": "Do you want to proceed?", "step_index": 4}]
+
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "transcript_path",
+        lambda _conversation_id: tmp_path / "transcript.jsonl",
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.TranscriptHarvester",
+        FakeHarvester,
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.time.monotonic",
+        lambda: now[0],
+    )
+    monkeypatch.setattr(runner, "append_terminal_progress", lambda *_args, **_kwargs: 4)
+    supervisor = RunSupervisor("run-1")
+    supervisor.session = "agy-run-1"
+
+    supervisor._observe_conversation()
+    now[0] = 0.6
+    supervisor._observe_conversation()
+
+    events = session_events.read_events(tmp_path)
+    assert events[-1]["kind"] == "needs_attention"
+    assert events[-1]["category"] == "approval_prompt"
+    assert events[-1]["observed"]["activity_state"] == "awaiting_user"
+    assert events[-1]["observed"]["prompt"] == "Do you want to proceed?"
 
 
 def test_interactive_supervisor_delivers_one_queued_prompt_per_response(

@@ -224,42 +224,36 @@ Useful environment variables:
 
 | Tool | Purpose |
 | --- | --- |
-| `agy_start` | Start an auto-visible foreground bridge-owned task and return a `run_id` |
-| `agy_interactive_start` | Start an experimental persistent foreground conversation session |
-| `agy_continue` | Continue an exact `conversation_id` |
-| `agy_wait` | Block until selected runs emit sparse lifecycle notifications |
-| `agy_status` | Read compact status or diagnostic paths |
-| `agy_transcript` | Read bounded progress events |
-| `agy_result` | Read the final semantic response |
-| `agy_cancel` | Cancel an active run |
-| `agy_models` | List models available to the installed CLI |
-| `agy_doctor` | Report bounded bridge, CLI, tmux, storage, and run diagnostics |
-| `agy_plugins` | List imported plugins without mutating configuration |
-| `agy_plugin_validate` | Validate a plugin directory contained by a workspace |
-| `agy_changelog` | Read the installed CLI changelog |
-| `agy_goal_create` | Create a bridge-owned MCP scheduling container |
-| `agy_goal_target_start` | Start one independent scheduler target |
-| `agy_goal_status` | Aggregate bridge scheduler target status |
-| `agy_target_open_terminal` | Reattach Terminal.app to an existing run |
-| `agy_target_send_text` | Send input directly to a live foreground Run |
+| `agy_run_start` | Start, continue, or open an interactive foreground Run |
+| `agy_run_wait` | Block until selected Runs emit sparse wake events |
+| `agy_run_observe` | Read full, status, transcript, or raw terminal views |
+| `agy_run_input` | Send input with optional event/transcript preconditions |
+| `agy_run_cancel` | Cancel one active Run |
+| `agy_run_result` | Read final result metadata or bounded result chunks |
+| `agy_goal` | Create goals, start targets, and read aggregate status |
+| `agy_admin` | Read diagnostics, models, plugins, plugin validation, and changelog |
 
 Typical call flow:
 
 ```text
-agy_start
+agy_run_start
   -> run_id
-  -> agy_wait
-  -> agy_status / agy_transcript when a wait event needs inspection
-  -> agy_result
+  -> agy_run_wait
+  -> agy_run_observe(view="full") when a wait event needs inspection
+  -> agy_run_observe(view="terminal") when a timeout or classifier miss looks suspicious
+  -> agy_run_input(expected_event_key=..., expected_transcript_step=...)
+  -> agy_run_result
 ```
 
-Use `agy_continue` only with the exact `conversation_id` returned by a previous
-run. Every start and continuation also requires an absolute workspace path.
+Use `agy_run_start` with the exact `conversation_id` returned by a previous Run
+to continue. Every start and continuation also requires an absolute workspace
+path.
 
 ## How It Works
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed process
-topology, lifecycle diagrams, and module responsibilities.
+topology, lifecycle diagrams, and module responsibilities. See
+[docs/MCP_VISION.md](docs/MCP_VISION.md) for the lean MCP control-loop vision.
 
 ```text
 Codex
@@ -384,11 +378,13 @@ Antigravity is an agentic CLI. It can read and write files, execute commands,
 and access the network with the current user's privileges. This bridge is not a
 sandbox or security boundary.
 
-`dangerously_skip_permissions` defaults to `true` for print-mode tools. Set it
-to `false` when unattended execution is not appropriate. `sandbox=true` and
-`additional_directories` are CLI policy hints forwarded as `--sandbox` and
-`--add-dir`; live testing with Antigravity CLI 1.0.8 showed that they do not
-enforce filesystem containment. A workspace scopes conversation context only.
+The bridge always enables Antigravity's dangerous permission-skip policy so
+unattended Runs do not stall on CLI approval prompts. Any
+`dangerously_skip_permissions=false` input is accepted only for compatibility
+and is ignored. `sandbox=true` and `additional_directories` are CLI policy
+hints forwarded as `--sandbox` and `--add-dir`; live testing with Antigravity
+CLI 1.0.8 showed that they do not enforce filesystem containment. A workspace
+scopes conversation context only.
 
 Interactive Runs are experimental and should be used sparingly. The bridge
 queues submitted prompts and releases one after observing a completed planner

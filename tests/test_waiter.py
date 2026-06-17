@@ -3,7 +3,9 @@ from __future__ import annotations
 import threading
 import time
 
-from codex_agy_bridge import core, session_events
+import pytest
+
+from codex_agy_bridge import core, session_events, terminal
 from codex_agy_bridge.waiter import wait_for_runs
 
 
@@ -48,7 +50,7 @@ def test_wait_for_runs_timeout_ignores_ordinary_events_for_attention(tmp_path):
         {"run_id": "run-1", "status": "running"},
     )
     first = session_events.append_event(run_dir, "run_started")
-    session_events.append_event(run_dir, "terminal_opened")
+    session_events.append_event(run_dir, "terminal_output_observed")
 
     result = wait_for_runs(
         {"run-1": run_dir},
@@ -61,6 +63,100 @@ def test_wait_for_runs_timeout_ignores_ordinary_events_for_attention(tmp_path):
     assert result["matched"] is False
     assert result["events"] == []
     assert result["runs"]["run-1"]["latest_event_id"] == "000000000002"
+
+
+def test_wait_for_runs_attention_wakes_on_progress_stalled(tmp_path):
+    state_root = tmp_path / "state"
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    core.atomic_write_json(
+        core.state_path("run-1", state_root=state_root),
+        {"run_id": "run-1", "status": "running"},
+    )
+    first = session_events.append_event(run_dir, "run_started")
+    stalled = session_events.append_event(
+        run_dir,
+        "progress_stalled",
+        {
+            "severity": "warning",
+            "observed": {
+                "activity_state": "possibly_stalled",
+                "latest_transcript_step": 4,
+            },
+        },
+    )
+
+    result = wait_for_runs(
+        {"run-1": run_dir},
+        state_root=state_root,
+        condition="any_attention",
+        after={"run-1": first["event_id"]},
+        timeout_seconds=0,
+    )
+
+    assert result["matched"] is True
+    assert result["events"] == [stalled]
+    assert result["runs"]["run-1"]["activity_state"] == "possibly_stalled"
+
+
+def test_wait_for_runs_zero_timeout_does_not_capture_live_pane(
+    tmp_path,
+    monkeypatch,
+):
+    state_root = tmp_path / "state"
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    core.atomic_write_json(
+        core.state_path("run-1", state_root=state_root),
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "tmux_session": "agy-run-1",
+        },
+    )
+    session_events.append_event(run_dir, "run_started")
+    monkeypatch.setattr(
+        terminal,
+        "capture_pane",
+        lambda _session, **_kwargs: pytest.fail("capture_pane must not be called"),
+    )
+
+    result = wait_for_runs(
+        {"run-1": run_dir},
+        state_root=state_root,
+        condition="any_attention",
+        timeout_seconds=0,
+    )
+
+    assert result["matched"] is False
+
+
+def test_wait_for_runs_persists_current_snapshot_attention(tmp_path):
+    state_root = tmp_path / "state"
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    core.atomic_write_json(
+        core.state_path("run-1", state_root=state_root),
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "tmux_session": None,
+        },
+    )
+    first = session_events.append_event(run_dir, "run_started")
+    (run_dir / "terminal.log").write_text("Continue?", encoding="utf-8")
+
+    result = wait_for_runs(
+        {"run-1": run_dir},
+        state_root=state_root,
+        condition="any_attention",
+        after={"run-1": first["event_id"]},
+        timeout_seconds=10,
+    )
+
+    assert result["matched"] is True
+    assert result["events"][0]["kind"] == "needs_attention"
+    assert result["events"][0]["observed"]["prompt"] == "Continue?"
+    assert result["runs"]["run-1"]["activity_state"] == "awaiting_user"
+    assert result["runs"]["run-1"]["attention"]["required"] is True
+    assert session_events.read_events(run_dir)[-1]["kind"] == "needs_attention"
 
 
 def test_wait_for_runs_all_terminal_matches_when_every_run_is_terminal(tmp_path):

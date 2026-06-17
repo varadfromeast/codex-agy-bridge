@@ -13,7 +13,8 @@ def test_terminal_launch_owns_tmux_setup(monkeypatch, tmp_path):
     monkeypatch.setattr(
         terminal.subprocess,
         "run",
-        lambda command, **kwargs: calls.append((command, kwargs)),
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
     )
 
     terminal.launch(
@@ -54,7 +55,8 @@ def test_terminal_launch_passes_bridge_environment_to_tmux_session(
     monkeypatch.setattr(
         terminal.subprocess,
         "run",
-        lambda command, **kwargs: calls.append((command, kwargs)),
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
     )
 
     terminal.launch(
@@ -98,7 +100,12 @@ def test_terminal_launch_rolls_back_session_when_pipe_setup_fails(
 
     assert calls[-1] == (
         ["tmux", "kill-session", "-t", "agy-target"],
-        {"check": False},
+        {
+            "check": False,
+            "timeout": terminal.DEFAULT_TMUX_TIMEOUT_SECONDS,
+            "capture_output": True,
+            "text": True,
+        },
     )
 
 
@@ -159,14 +166,33 @@ def test_terminal_attach_opens_terminal_app(monkeypatch):
     monkeypatch.setattr(
         terminal.subprocess,
         "run",
-        lambda command, **kwargs: calls.append((command, kwargs)),
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
     )
 
     terminal.attach("agy-target", check=True)
 
     assert calls[0][0][0] == "osascript"
     assert "tmux attach-session -t agy-target" in calls[0][0][2]
-    assert calls[0][1]["check"] is True
+    assert calls[0][1] == {
+        "check": False,
+        "capture_output": True,
+        "text": True,
+        "timeout": terminal.DEFAULT_TMUX_TIMEOUT_SECONDS,
+    }
+
+
+def test_terminal_attach_timeout_is_structured(monkeypatch):
+    def run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(terminal.subprocess, "run", run)
+
+    with pytest.raises(terminal.TmuxCommandError) as error:
+        terminal.attach("agy-target", check=True)
+
+    assert error.value.reason == "timeout"
+    assert error.value.command[0] == "osascript"
 
 
 def test_terminal_send_text_targets_tmux_session(monkeypatch):
@@ -175,7 +201,8 @@ def test_terminal_send_text_targets_tmux_session(monkeypatch):
     monkeypatch.setattr(
         terminal.subprocess,
         "run",
-        lambda command, **kwargs: calls.append((command, kwargs)),
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
     )
 
     terminal.send_text("agy-target", "yes\nsecond line")
@@ -183,15 +210,61 @@ def test_terminal_send_text_targets_tmux_session(monkeypatch):
     assert calls == [
         (
             ["tmux", "send-keys", "-t", "agy-target", "-l", "--", "yes"],
-            {"check": True},
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": terminal.DEFAULT_TMUX_TIMEOUT_SECONDS,
+            },
         ),
         (
             ["tmux", "send-keys", "-t", "agy-target", "M-Enter"],
-            {"check": True},
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": terminal.DEFAULT_TMUX_TIMEOUT_SECONDS,
+            },
         ),
         (
             ["tmux", "send-keys", "-t", "agy-target", "-l", "--", "second line"],
-            {"check": True},
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": terminal.DEFAULT_TMUX_TIMEOUT_SECONDS,
+            },
         ),
-        (["tmux", "send-keys", "-t", "agy-target", "Enter"], {"check": True}),
+        (
+            ["tmux", "send-keys", "-t", "agy-target", "Enter"],
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": terminal.DEFAULT_TMUX_TIMEOUT_SECONDS,
+            },
+        ),
+    ]
+
+
+def test_terminal_send_text_timeout_is_structured(monkeypatch):
+    monkeypatch.setattr(terminal, "alive", lambda _session: True)
+
+    def run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(terminal.subprocess, "run", run)
+
+    with pytest.raises(terminal.TmuxCommandError) as error:
+        terminal.send_text("agy-target", "yes")
+
+    assert error.value.reason == "timeout"
+    assert error.value.command == [
+        "tmux",
+        "send-keys",
+        "-t",
+        "agy-target",
+        "-l",
+        "--",
+        "yes",
     ]

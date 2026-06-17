@@ -52,7 +52,7 @@ behavior in `execution.py` and `terminal.py`.
 
 ```text
 MCP client
-  -> server.py: agy_start() / agy_interactive_start()
+  -> server.py: agy_run_start()
   -> orchestration.py: create_run()                  facade
   -> _orchestrator.py: RunnerOrchestrator.create_run()
   -> run_request.py: RunRequest.prepare()
@@ -82,29 +82,48 @@ happens after releasing the lock so slow OS work does not serialize starts.
 sequenceDiagram
     participant C as MCP client
     participant O as RunnerOrchestrator
-    participant Q as Durable input queue
-    participant S as RunSupervisor
+    participant E as Run events and transcript cursor
     participant T as tmux
     participant A as Antigravity
 
-    C->>O: agy_target_send_text(prompt)
-    O->>Q: append submitted prompt
-    O-->>C: accepted immediately
-    S->>Q: peek oldest prompt
-    S->>T: deliver one prompt
+    C->>O: agy_run_input(text, expected_event_key, expected_transcript_step)
+    O->>E: read latest event key and transcript step
+    alt cursor is stale
+        O-->>C: rejected with latest step/status
+    else cursor still current
+        O->>E: append mcp_input_submitted
+        O->>T: send literal text/Enter
+        O->>E: append mcp_input_delivered or mcp_input_failed
+        O-->>C: delivered or failed delivery state
+    end
     T->>A: literal text, M-Enter per newline, Enter to submit
-    A-->>S: completed planner response
-    S->>Q: remove delivered prompt and release next
 ```
 
-Non-empty `enter=true` input is queued in `interactive-input.json` and released
-one prompt per completed response. `enter=false` and empty Enter remain direct
-terminal keystrokes.
+Input is an optimistic write, similar to Kubernetes `resourceVersion` updates:
+Codex can pass the event key and transcript step it observed. If the Run has
+advanced, the bridge refuses to send keys and returns fresh evidence. This
+prevents Codex from answering an old prompt after Antigravity already moved on.
 
-This queue is experimental and transcript-gated. It depends on private
-Antigravity response event semantics and can stall if those events change.
-Compact Run status reports queued prompt count and whether one prompt is
-waiting for a response. Text injection is rejected for print-mode Runs.
+#### Progress-Stall Wakeup
+
+```mermaid
+sequenceDiagram
+    participant S as RunSupervisor
+    participant H as TranscriptHarvester
+    participant E as session-events.jsonl
+    participant C as Codex
+
+    S->>H: poll appended transcript bytes
+    H-->>S: latest transcript step N
+    S->>S: no newer step for AGY_BRIDGE_TRANSCRIPT_IDLE_SECONDS
+    S->>E: append progress_stalled for step N
+    C->>E: agy_run_wait(any_attention)
+    E-->>C: progress_stalled warning
+    C->>C: inspect transcript and terminal before acting
+```
+
+`progress_stalled` is a wake-up hint, not a stuck verdict. Codex should inspect
+`agy_run_observe(view="full")` or `view="terminal"` before sending input.
 
 Goals are bridge-owned MCP scheduling records. They coordinate independent
 Antigravity Runs; they are not an Antigravity primitive and do not provide

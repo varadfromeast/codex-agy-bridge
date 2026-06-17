@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import signal
 import threading
 
 import pytest
@@ -223,9 +225,15 @@ def test_foreground_send_text_submits_directly_to_tmux(monkeypatch, tmp_path):
     events = state_root / "runs" / "run-1" / "interactive-input-events.jsonl"
     assert '"delivery":"foreground_mcp_submit"' in events.read_text()
     notification_events = session_events.read_events(state_root / "runs" / "run-1")
-    assert notification_events[-1]["kind"] == "mcp_input"
-    assert notification_events[-1]["delivery"] == "foreground_mcp_submit"
+    assert [event["kind"] for event in notification_events[-2:]] == [
+        "mcp_input_submitted",
+        "mcp_input_delivered",
+    ]
+    assert notification_events[-1]["observed"]["delivery"] == "foreground_mcp_submit"
     assert result["sent"] is True
+    assert result["delivery_id"]
+    assert result["delivery_state"] == "delivered"
+    assert result["cleared_attention"] is True
     assert result["execution_mode"] == "print"
     assert result["agent_mode"] == "task"
     assert result["delivery"] == "foreground_mcp_submit"
@@ -260,6 +268,191 @@ def test_wait_returns_compact_event_updates(monkeypatch, tmp_path):
     assert result["runs"]["run-1"]["status"] == "completed"
 
 
+def test_observe_merges_run_events_transcript_cursor_and_provider_health(
+    monkeypatch, tmp_path
+):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    brain = tmp_path / "brain"
+    monkeypatch.setattr(core, "BRAIN_DIR", brain)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "conversation_id": "conversation-1",
+        "tmux_session": "agy-target",
+        "execution_mode": "print",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+    }
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    first = session_events.append_event(run_dir, "run_started")
+    second = session_events.append_event(
+        run_dir,
+        "transcript_advanced",
+        {"observed": {"latest_transcript_step": 2}},
+    )
+    transcript = core.transcript_path("conversation-1")
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in [
+                {
+                    "step_index": 1,
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "content": "old",
+                },
+                {
+                    "step_index": 2,
+                    "source": "MODEL",
+                    "type": "RUN_COMMAND",
+                    "status": "RUNNING",
+                    "content": "new work",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "agy.log").write_text("ApplyAuthResult: ok\n", encoding="utf-8")
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+
+    result = orchestration.observe(
+        ["run-1"],
+        after={"run-1": {"event_id": first["run_seq"], "transcript_step": 1}},
+    )
+
+    observed = result["runs"]["run-1"]
+    assert result["run_ids"] == ["run-1"]
+    assert observed["state"]["status"] == "running"
+    assert observed["activity_state"] == "working"
+    assert observed["events"] == [second]
+    assert observed["transcript"]["steps"] == [
+        {
+            "step_index": 2,
+            "source": "MODEL",
+            "type": "RUN_COMMAND",
+            "status": "RUNNING",
+            "created_at": None,
+        }
+    ]
+    assert observed["cursor"] == {
+        "event_id": second["run_seq"],
+        "event_key": second["event_id"],
+        "transcript_step": 2,
+    }
+    assert observed["provider_health"] == {"status": "authenticated"}
+    assert observed["terminal"] == {"tail_available": False}
+
+
+def test_observe_can_include_bounded_terminal_tail(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+    }
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    run_dir.mkdir(parents=True)
+    (run_dir / "terminal-progress.log").write_text(
+        "old line\ncurrent prompt?\n",
+        encoding="utf-8",
+    )
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+
+    compact = orchestration.observe(["run-1"])
+    expanded = orchestration.observe(["run-1"], include_terminal_tail=True)
+
+    assert compact["runs"]["run-1"]["terminal"] == {"tail_available": True}
+    assert expanded["runs"]["run-1"]["terminal"] == {
+        "tail_available": True,
+        "tail": "old line\ncurrent prompt?\n",
+        "source": "terminal-progress.log",
+    }
+
+
+def test_observe_can_include_live_prompt_snapshot_when_tail_is_absent(
+    monkeypatch, tmp_path
+):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "capture_pane",
+        lambda session, **_kwargs: f"{session}: Approve command?",
+    )
+
+    result = orchestration.observe(["run-1"], include_terminal_tail=True)
+
+    assert result["runs"]["run-1"]["terminal"] == {
+        "tail_available": True,
+        "prompt_snapshot": "agy-target: Approve command?",
+        "source": "tmux_capture",
+    }
+
+
+def test_terminal_snapshot_returns_raw_pane_and_control_affordance(
+    monkeypatch, tmp_path
+):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "print",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+    }
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    run_dir.mkdir(parents=True)
+    (run_dir / "terminal.log").write_text(
+        "previous terminal output\n",
+        encoding="utf-8",
+    )
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: True)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "capture_pane",
+        lambda session, **_kwargs: f"{session}: raw prompt waiting\n",
+    )
+
+    result = orchestration.terminal_snapshot("run-1", max_chars=80)
+
+    assert result["run_id"] == "run-1"
+    assert result["status"] == "running"
+    assert result["tmux_session"] == "agy-target"
+    assert result["tmux_alive"] is True
+    assert result["can_send_text"] is True
+    assert result["live_pane"] == {
+        "available": True,
+        "source": "tmux_capture",
+        "text": "agy-target: raw prompt waiting\n",
+        "truncated": False,
+    }
+    assert result["logs"]["terminal_log_tail"] == {
+        "available": True,
+        "text": "previous terminal output\n",
+        "truncated": False,
+    }
+    assert result["control"] == {
+        "send_with": "agy_run_input",
+    }
+
+
 def test_wait_rejects_empty_run_batch(tmp_path):
     orch = RunnerOrchestrator(state_root=tmp_path / "state")
 
@@ -287,7 +480,7 @@ def test_headless_run_rejects_terminal_text_injection(monkeypatch, tmp_path):
         orchestration.send_text("run-1", "must not inject")
 
 
-def test_open_terminal_emits_terminal_opened(monkeypatch, tmp_path):
+def test_open_terminal_emits_terminal_output_observed(monkeypatch, tmp_path):
     state_root = isolate_state_root(monkeypatch, tmp_path)
     mem_store = MemoryRunStore()
     mem_store.runs["run-1"] = {
@@ -311,7 +504,7 @@ def test_open_terminal_emits_terminal_opened(monkeypatch, tmp_path):
     events = session_events.read_events(state_root / "runs" / "run-1")
     assert opened == [("agy-target", True)]
     assert result["opened"] is True
-    assert events[-1]["kind"] == "terminal_opened"
+    assert events[-1]["kind"] == "terminal_output_observed"
 
 
 def test_cancel_emits_cancel_requested(tmp_path):
@@ -339,7 +532,100 @@ def test_cancel_emits_cancel_requested(tmp_path):
     orchestrator.cancel("run-1")
 
     events = session_events.read_events(tmp_path / "state" / "runs" / "run-1")
-    assert events[-1]["kind"] == "cancel_requested"
+    assert [event["kind"] for event in events[-2:]] == [
+        "cancel_requested",
+        "run_canceled",
+    ]
+
+
+def test_cancel_terminates_processes_and_finishes_without_final_result(tmp_path):
+    class RecordingProcessManager(ProcessManager):
+        def __init__(self) -> None:
+            self.alive = {123, 456}
+            self.signals: list[tuple[int, int]] = []
+
+        def spawn(self, args, cwd, stdout, stderr):
+            raise AssertionError("spawn is not expected")
+
+        def is_alive(self, pid):
+            return pid in self.alive
+
+        def killpg(self, gpid, sig):
+            self.signals.append((gpid, sig))
+            if sig == signal.SIGKILL:
+                self.alive.discard(gpid)
+
+        def kill(self, pid, sig):
+            self.signals.append((pid, sig))
+            if sig == signal.SIGKILL:
+                self.alive.discard(pid)
+
+    store = MemoryRunStore()
+    store.save_run(
+        "run-1",
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "runner_pid": 123,
+            "agy_pid": 456,
+            "result": "partial planner response",
+            "conversation_id": "conversation-1",
+            "completion_marker": "DONE_MARKER",
+        },
+    )
+    run_dir = tmp_path / "state" / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final-result.txt").write_text("stale partial", encoding="utf-8")
+    session = MockSession(run_dir)
+    session._alive = True
+    manager = RecordingProcessManager()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        store=store,
+        process_manager=manager,
+        session_factory=lambda _state, _run_dir: session,
+    )
+
+    result = orchestrator.cancel("run-1")
+
+    assert result["status"] == "canceled"
+    assert result.get("result") is None
+    assert session.is_alive() is False
+    assert manager.signals == [
+        (123, signal.SIGTERM),
+        (456, signal.SIGTERM),
+        (123, signal.SIGKILL),
+        (456, signal.SIGKILL),
+    ]
+    assert not (run_dir / "final-result.txt").exists()
+    events = session_events.read_events(run_dir)
+    assert [event["kind"] for event in events[-2:]] == [
+        "cancel_requested",
+        "run_canceled",
+    ]
+    assert orchestrator.result("run-1")["result"] is None
+    with pytest.raises(ValueError, match="result artifact is unavailable"):
+        orchestrator.result_read("run-1")
+
+
+def test_canceled_result_does_not_synthesize_artifact_from_transcript(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "canceled",
+            "conversation_id": "conversation-1",
+            "result": "partial planner response",
+            "completion_marker": "DONE_MARKER",
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    result = orchestrator.result("run")
+
+    assert result["result"] is None
+    assert not (tmp_path / "runs" / "run" / "final-result.txt").exists()
 
 
 def test_foreground_task_run_accepts_text_injection(monkeypatch, tmp_path):
@@ -368,6 +654,7 @@ def test_foreground_task_run_accepts_text_injection(monkeypatch, tmp_path):
 
     assert sent == [("agy-target", "steer the task", True)]
     assert result["sent"] is True
+    assert result["delivery_state"] == "delivered"
     assert result["delivery"] == "foreground_mcp_submit"
 
 
@@ -462,9 +749,113 @@ def test_interactive_submitted_text_rejects_dead_session(monkeypatch, tmp_path):
     result = orchestration.send_text("run-1", "must not queue")
 
     assert result["sent"] is False
+    assert result["delivery_state"] == "failed"
+    assert result["error_kind"] == "tmux_unavailable"
     assert result["status"] == "running"
     assert result["conversation_id"] == "conversation-1"
     assert result["error"] == "tmux session is not running: agy-target"
+    assert result["snapshot"]["lifecycle_status"] == "running"
+
+
+def test_interactive_submitted_text_reports_tmux_timeout(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "interactive",
+        "agent_mode": "conversation",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: True)
+
+    def send_text(_session, _text, *, enter=True):
+        raise orchestration.terminal.TmuxCommandError(
+            command=["tmux", "send-keys"],
+            reason="timeout",
+        )
+
+    monkeypatch.setattr(orchestration.terminal, "send_text", send_text)
+
+    result = orchestration.send_text("run-1", "yes")
+
+    notification_events = session_events.read_events(state_root / "runs" / "run-1")
+    assert [event["kind"] for event in notification_events[-2:]] == [
+        "mcp_input_submitted",
+        "mcp_input_failed",
+    ]
+    assert result["sent"] is False
+    assert result["delivery_state"] == "failed"
+    assert result["error_kind"] == "tmux_timeout"
+    assert result["snapshot"]["attention"]["required"] is True
+
+
+def test_send_text_rejects_stale_transcript_precondition(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    brain = tmp_path / "brain"
+    monkeypatch.setattr(core, "BRAIN_DIR", brain)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "print",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+        "conversation_id": "conversation-1",
+    }
+    transcript = core.transcript_path("conversation-1")
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in [
+                {
+                    "step_index": 12,
+                    "source": "MODEL",
+                    "type": "RUN_COMMAND",
+                    "status": "RUNNING",
+                    "content": "old work",
+                },
+                {
+                    "step_index": 13,
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "content": "new answer that should change Codex's decision",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(orchestration.terminal, "alive", lambda _session: True)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "send_text",
+        lambda *_args, **_kwargs: pytest.fail("stale input must not be delivered"),
+    )
+
+    result = orchestration.send_text(
+        "run-1",
+        "yes",
+        expected_transcript_step=12,
+    )
+
+    assert result["sent"] is False
+    assert result["delivery_state"] == "rejected"
+    assert result["error_kind"] == "stale_observation"
+    assert result["expected_transcript_step"] == 12
+    assert result["latest_transcript_step"] == 13
+    assert result["latest_step"]["content"] == (
+        "new answer that should change Codex's decision"
+    )
+    assert result["retry_with"] == "agy_observe"
 
 
 def test_open_terminal_rejects_stopped_tmux_session(monkeypatch, tmp_path):
@@ -633,6 +1024,89 @@ def test_status_does_not_fail_queued_run_before_spawn(tmp_path):
     assert orchestrator.status("queued-run")["status"] == "queued"
 
 
+def test_status_fails_running_run_without_recorded_process(tmp_path):
+    store = MemoryRunStore()
+    session = MockSession(tmp_path / "run")
+    session.start("run", ["agy"], tmp_path)
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "running",
+            "runner_pid": None,
+            "agy_pid": None,
+            "tmux_session": "agy-run",
+        },
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path,
+        store=store,
+        process_manager=DeadProcessManager(),
+        session_factory=lambda _state, _run_dir: session,
+    )
+
+    result = orchestrator.status("run")
+
+    assert result["status"] == "failed"
+    assert result["error"] == "runner exited before recording a terminal status"
+    assert session.is_alive() is False
+
+
+def test_status_projects_attention_without_changing_lifecycle(tmp_path):
+    store = MemoryRunStore()
+    run_id = "run-approval"
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "execution_surface": "foreground",
+            "human_attachable": True,
+            "tmux_session": "agy-approval",
+            "runner_pid": 101,
+        },
+    )
+    class AliveProcessManager(ProcessManager):
+        def spawn(self, args, cwd, stdout, stderr):
+            raise AssertionError("spawn is not expected")
+
+        def is_alive(self, pid):
+            return True
+
+        def killpg(self, gpid, sig):
+            pass
+
+        def kill(self, pid, sig):
+            pass
+
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path,
+        store=store,
+        process_manager=AliveProcessManager(),
+    )
+    session_events.append_event(
+        orchestrator.run_dir(run_id),
+        "needs_attention",
+        {
+            "category": "approval_prompt",
+            "severity": "action_required",
+            "observed": {
+                "prompt": "Do you want to proceed?",
+                "suggested_inputs": ["y", "n"],
+            },
+        },
+    )
+
+    result = orchestrator.status(run_id)
+
+    assert result["status"] == "running"
+    assert result["lifecycle_status"] == "running"
+    assert result["activity_state"] == "awaiting_user"
+    assert result["attention_required"] is True
+    assert result["attention"]["reason"] == "approval_prompt"
+    assert result["can_send_text"] is True
+
+
 def test_status_fails_run_and_stops_session_when_supervisor_exits(tmp_path):
     class SplitLivenessProcessManager(ProcessManager):
         def spawn(self, args, cwd, stdout, stderr):
@@ -723,7 +1197,7 @@ def test_result_returns_preview_and_read_metadata_for_large_artifact(tmp_path):
         "total_bytes": 6,
         "complete": True,
         "artifact_path": str(tmp_path / "runs" / "run" / "final-result.txt"),
-        "read_with": "agy_result_read",
+        "read_with": "agy_run_result",
     }
     assert (tmp_path / "runs" / "run" / "final-result.txt").read_text() == "abcdef"
 
@@ -981,7 +1455,7 @@ def test_goal_target_inherits_execution_policy(monkeypatch, tmp_path):
 
     assert target["sandbox"] is False
     assert target["additional_directories"] == [str(extra)]
-    assert target["dangerously_skip_permissions"] is False
+    assert target["dangerously_skip_permissions"] is True
 
 
 def test_goal_status_includes_completed_target_result_metadata(tmp_path):
@@ -1016,7 +1490,7 @@ def test_goal_status_includes_completed_target_result_metadata(tmp_path):
         "artifact_path": str(
             tmp_path / "state" / "runs" / run_id / "final-result.txt"
         ),
-        "read_with": "agy_result_read",
+        "read_with": "agy_run_result",
     }
 
 
@@ -1047,6 +1521,65 @@ def test_goal_status_omits_result_metadata_for_active_target(tmp_path):
 
     assert status["targets"]["alpha"]["result"] is None
     assert not (tmp_path / "state" / "runs" / run_id / "final-result.txt").exists()
+
+
+def test_goal_status_projects_active_target_attention(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = MemoryRunStore()
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+    goal = orchestrator.create_goal(
+        objective="collect approvals",
+        workspace=str(workspace),
+    )
+    run_id = "run-needs-approval"
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "conversation_id": "conversation-1",
+            "error": None,
+        },
+    )
+    session_events.append_event(
+        orchestrator.run_dir(run_id),
+        "needs_attention",
+        {
+            "category": "approval_prompt",
+            "severity": "action_required",
+            "observed": {
+                "prompt": "Do you want to proceed?",
+                "suggested_inputs": ["y", "n"],
+            },
+        },
+    )
+    goal["targets"] = {"alpha": run_id}
+    store.save_goal(goal["goal_id"], goal)
+
+    status = orchestrator.goal_status(goal["goal_id"])
+    target = status["targets"]["alpha"]
+
+    assert target["status"] == "running"
+    assert target["lifecycle_status"] == "running"
+    assert target["activity_state"] == "awaiting_user"
+    assert target["attention_required"] is True
+    assert target["attention"]["prompt"] == "Do you want to proceed?"
+
+
+def test_goal_accepts_none_model_as_default(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = MemoryRunStore()
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+
+    goal = orchestrator.create_goal(
+        objective="default model",
+        workspace=str(workspace),
+        model=None,
+    )
+
+    assert goal["model"] == orchestration.DEFAULT_MODEL
 
 
 def test_goal_rejects_unknown_model_before_persistence(tmp_path):

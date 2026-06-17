@@ -52,23 +52,24 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
         initialized = await session.initialize()
         tools = await session.list_tools()
         boolean_parallelism = await session.call_tool(
-            "agy_goal_create",
+            "agy_goal",
             {
+                "action": "create",
                 "objective": "Reject boolean parallelism",
                 "workspace": str(tmp_path),
                 "max_parallel": True,
             },
         )
         external_run_status = await session.call_tool(
-            "agy_status",
-            {"run_id": str(external_run), "compact": False},
+            "agy_run_observe",
+            {"run_ids": [str(external_run)], "view": "status", "compact": False},
         )
         external_goal_status = await session.call_tool(
-            "agy_goal_status",
-            {"goal_id": str(external_goal)},
+            "agy_goal",
+            {"action": "status", "goal_id": str(external_goal)},
         )
         blank_continuation = await session.call_tool(
-            "agy_continue",
+            "agy_run_start",
             {
                 "conversation_id": "   ",
                 "prompt": "must not start",
@@ -76,7 +77,7 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
             },
         )
         unexpected_start_argument = await session.call_tool(
-            "agy_start",
+            "agy_run_start",
             {
                 "prompt": "must not start",
                 "workspace": str(tmp_path),
@@ -92,64 +93,45 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     assert blank_continuation.isError
     assert unexpected_start_argument.isError
     assert "run_id" in initialized.instructions
-    assert "agy_goal_create" in initialized.instructions
-    assert "agy_goal_target_start" in initialized.instructions
-    assert "agy_goal_status" in initialized.instructions
+    assert "agy_run_observe" in initialized.instructions
+    assert "agy_goal" in initialized.instructions
+    assert "agy_admin" in initialized.instructions
     assert {tool.name for tool in tools.tools} == {
-        "agy_start",
-        "agy_interactive_start",
-        "agy_continue",
-        "agy_wait",
-        "agy_status",
-        "agy_transcript",
-        "agy_result",
-        "agy_result_read",
-        "agy_cancel",
-        "agy_models",
-        "agy_doctor",
-        "agy_plugins",
-        "agy_plugin_validate",
-        "agy_changelog",
-        "agy_goal_create",
-        "agy_goal_target_start",
-        "agy_goal_status",
-        "agy_target_open_terminal",
-        "agy_target_send_text",
+        "agy_run_start",
+        "agy_run_wait",
+        "agy_run_observe",
+        "agy_run_input",
+        "agy_run_cancel",
+        "agy_run_result",
+        "agy_goal",
+        "agy_admin",
     }
-    start = next(tool for tool in tools.tools if tool.name == "agy_start")
+    start = next(tool for tool in tools.tools if tool.name == "agy_run_start")
     assert start.outputSchema is not None
     assert start.outputSchema["type"] == "object"
     assert "visible_terminal" not in start.inputSchema["properties"]
     assert start.inputSchema["properties"]["sandbox"]["default"] is False
     assert "additional_directories" in start.inputSchema["properties"]
-    assert "CLI policy hint" in start.description
-    assert "not filesystem containment" in " ".join(start.description.split())
+    assert "Start or continue" in start.description
     assert (
         start.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
         is True
     )
-    continuation = next(tool for tool in tools.tools if tool.name == "agy_continue")
-    assert "visible_terminal" not in continuation.inputSchema["properties"]
-    assert "CLI policy hint" in continuation.description
-    assert (
-        continuation.inputSchema["properties"]["dangerously_skip_permissions"][
-            "default"
-        ]
-        is True
+    observe = next(tool for tool in tools.tools if tool.name == "agy_run_observe")
+    assert "view" in observe.inputSchema["properties"]
+    assert "terminal" in observe.description
+    input_tool = next(tool for tool in tools.tools if tool.name == "agy_run_input")
+    assert "expected_event_key" in input_tool.inputSchema["properties"]
+    assert "expected_transcript_step" in input_tool.inputSchema["properties"]
+    assert "stale-write" in input_tool.description
+    goal = next(tool for tool in tools.tools if tool.name == "agy_goal")
+    assert "action" in goal.inputSchema["properties"]
+    assert "scheduler goals" in goal.description
+    goal_model_schema = goal.inputSchema["properties"]["model"]
+    assert any(
+        option.get("type") == "null"
+        for option in goal_model_schema.get("anyOf", [])
+        if isinstance(option, dict)
     )
-    interactive = next(
-        tool for tool in tools.tools if tool.name == "agy_interactive_start"
-    )
-    assert "EXPERIMENTAL" in interactive.description
-    assert "send subsequent input directly" in interactive.description
-    assert "should not be used often" in interactive.description
-    goal = next(tool for tool in tools.tools if tool.name == "agy_goal_create")
-    assert "MCP scheduler" in goal.description
-    assert "not an Antigravity feature" in " ".join(goal.description.split())
-    target = next(tool for tool in tools.tools if tool.name == "agy_goal_target_start")
-    assert "visible_terminal" not in target.inputSchema["properties"]
-    assert "MCP scheduler" in target.description
-    assert (
-        target.inputSchema["properties"]["dangerously_skip_permissions"]["default"]
-        is None
-    )
+    admin = next(tool for tool in tools.tools if tool.name == "agy_admin")
+    assert "diagnostics" in admin.description

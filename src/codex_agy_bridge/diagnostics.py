@@ -18,6 +18,7 @@ from codex_agy_bridge._orchestrator import (
     _global_max_parallel,
 )
 from codex_agy_bridge.cli import AntigravityCli
+from codex_agy_bridge.run_control_snapshot import RunControlSnapshot
 
 _CLI = AntigravityCli()
 
@@ -122,7 +123,10 @@ def doctor(
     if run_id is not None:
         directory = core.run_dir(run_id)
         core.load_state(run_id)
-        report["run_diagnostics"] = core.run_provider_health(directory)
+        report["run_diagnostics"] = {
+            "provider_health": core.run_provider_health(directory),
+            "run_control_snapshot": RunControlSnapshot.from_run(run_id),
+        }
     return report
 
 
