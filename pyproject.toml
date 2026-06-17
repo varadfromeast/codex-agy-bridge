@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codex-agy-bridge"
-version = "0.1.2"
+version = "0.1.3"
 description = "Observable, resumable MCP bridge from Codex to Antigravity CLI"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -239,6 +239,35 @@ def test_foreground_send_text_submits_directly_to_tmux(monkeypatch, tmp_path):
     assert result["delivery"] == "foreground_mcp_submit"
 
 
+def test_send_text_rejects_completed_run_without_events(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "completed",
+        "tmux_session": "agy-target",
+        "execution_mode": "print",
+        "agent_mode": "task",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "send_text",
+        lambda *_args, **_kwargs: pytest.fail("terminal run must not receive input"),
+    )
+
+    result = orchestration.send_text("run-1", "late input")
+
+    assert result["sent"] is False
+    assert result["delivery_state"] == "rejected"
+    assert result["error_kind"] == "run_not_active"
+    assert result["status"] == "completed"
+    assert session_events.read_events(state_root / "runs" / "run-1") == []
+
+
 def test_send_text_rejects_oversized_input_before_tmux(monkeypatch, tmp_path):
     state_root = isolate_state_root(monkeypatch, tmp_path)
     mem_store = MemoryRunStore()
@@ -1568,7 +1597,6 @@ def test_goal_target_inherits_execution_policy(monkeypatch, tmp_path):
         workspace=str(workspace),
         sandbox=False,
         additional_directories=[str(extra)],
-        dangerously_skip_permissions=False,
     )
 
     target = orchestrator.start_goal_target(
@@ -1580,6 +1608,22 @@ def test_goal_target_inherits_execution_policy(monkeypatch, tmp_path):
     assert target["sandbox"] is False
     assert target["additional_directories"] == [str(extra)]
     assert target["dangerously_skip_permissions"] is True
+
+
+def test_goal_creation_rejects_disabled_dangerous_permission_skip(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state")
+
+    with pytest.raises(
+        ValueError,
+        match="dangerously_skip_permissions must be true",
+    ):
+        orchestrator.create_goal(
+            objective="policy inheritance",
+            workspace=str(workspace),
+            dangerously_skip_permissions=False,
+        )
 
 
 def test_goal_status_includes_completed_target_result_metadata(tmp_path):

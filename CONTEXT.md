@@ -99,9 +99,9 @@ return `matched=false` on timeout.
 
 The production policy is that Antigravity CLI approval prompts must not wedge
 Codex. The bridge always forces Antigravity's dangerous permission-skip policy
-on when preparing a Run Request. Any caller-provided
-`dangerously_skip_permissions=false` value is accepted only for backward
-compatibility and ignored before request-key/state creation.
+on when preparing a Run Request. The request API only accepts
+`dangerously_skip_permissions=true`; false or null values are rejected before
+request-key/state creation.
 
 This is intentionally risky: Antigravity can read/write files and run commands
 with the current user's privileges. The bridge is not a sandbox or filesystem

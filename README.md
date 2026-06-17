@@ -14,6 +14,49 @@ files. This bridge starts a detached worker, returns a durable `run_id`
 immediately, and exposes status, transcript, result, cancellation, continuation,
 wait, and bounded parallel-goal tools over MCP.
 
+## Quick Install
+
+Prerequisites:
+
+- Codex CLI or the Codex desktop app with local stdio MCP support
+- The official Antigravity CLI (`agy`), already authenticated locally
+- `uv` / `uvx`
+- `tmux` on macOS:
+
+```bash
+brew install tmux
+```
+
+Check the required commands:
+
+```bash
+codex --version
+agy --version
+uvx --version
+tmux -V
+```
+
+Install the bridge from PyPI as a user-level Codex MCP server:
+
+```bash
+codex mcp add codex-agy-bridge \
+  --env AGY_CMD="$(command -v agy)" \
+  -- "$(command -v uvx)" codex-agy-bridge@latest
+```
+
+Restart Codex, then verify:
+
+```bash
+codex mcp get codex-agy-bridge
+codex mcp list
+```
+
+Remove it with:
+
+```bash
+codex mcp remove codex-agy-bridge
+```
+
 ## Status
 
 This project is experimental. It currently targets:
@@ -48,7 +91,7 @@ when the CLI changes.
 - Starts foreground task sessions in tmux and experimental persistent
   `--prompt-interactive` sessions for occasional conversational input.
 
-## Install
+## Install Details
 
 ### Prerequisites
 
@@ -74,8 +117,7 @@ tmux -V
 
 ### Install in Codex from PyPI
 
-After the first PyPI release, install the bridge without cloning this
-repository:
+Install the bridge without cloning this repository:
 
 ```bash
 codex mcp add codex-agy-bridge \
@@ -152,9 +194,9 @@ repository is cloned. `AGENTS.md` is intended for contributors working inside
 the checkout and should not cause an agent to modify a user's machine merely
 because it read the repository instructions.
 
-### Install from GitHub before a PyPI release
+### Install from GitHub
 
-This works before a PyPI release:
+Use this when you want to try the repository version directly:
 
 ```bash
 codex mcp add codex-agy-bridge \
@@ -381,11 +423,11 @@ sandbox or security boundary.
 
 The bridge always enables Antigravity's dangerous permission-skip policy so
 unattended Runs do not stall on CLI approval prompts. Any
-`dangerously_skip_permissions=false` input is accepted only for compatibility
-and is ignored. `sandbox=true` and `additional_directories` are CLI policy
-hints forwarded as `--sandbox` and `--add-dir`; live testing with Antigravity
-CLI 1.0.8 showed that they do not enforce filesystem containment. A workspace
-scopes conversation context only.
+`dangerously_skip_permissions=false` input is rejected; the only allowed value
+is `true`. `sandbox=true` and `additional_directories` are CLI policy hints
+forwarded as `--sandbox` and `--add-dir`; live testing with Antigravity CLI
+1.0.8 showed that they do not enforce filesystem containment. A workspace scopes
+conversation context only.
 
 Interactive Runs are experimental and should be used sparingly. The bridge
 queues submitted prompts and releases one after observing a completed planner

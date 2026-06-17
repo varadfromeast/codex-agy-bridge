@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+import signal
 import subprocess
 
 import pytest
@@ -43,6 +44,41 @@ def test_terminal_launch_owns_tmux_setup(monkeypatch, tmp_path):
     assert "tail -n +1 -F" in script
     assert "terminal-progress.log" in script
     assert calls[1][0][:5] == ["tmux", "pipe-pane", "-o", "-t", "agy-target"]
+
+
+def test_terminal_final_kill_allows_captured_descendant_reparenting(monkeypatch):
+    signals = []
+    parents = {42: 10}
+
+    monkeypatch.setattr(terminal.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        terminal.os,
+        "killpg",
+        lambda pgid, sig: signals.append((pgid, sig)),
+    )
+    monkeypatch.setattr(
+        terminal.os,
+        "kill",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+    monkeypatch.setattr(terminal, "_parent_pid", lambda pid: parents.get(pid))
+    monkeypatch.setattr(terminal, "_process_alive", lambda pid: pid == 42)
+
+    terminal._signal_processes([42], signal.SIGTERM, captured_tree={42: 10})
+    parents[42] = 1
+    terminal._signal_processes(
+        [42],
+        signal.SIGKILL,
+        captured_tree={42: 10},
+        allow_reparented=True,
+    )
+
+    assert signals == [
+        (42, signal.SIGTERM),
+        (42, signal.SIGTERM),
+        (42, signal.SIGKILL),
+        (42, signal.SIGKILL),
+    ]
 
 
 def test_terminal_launch_passes_bridge_environment_to_tmux_session(

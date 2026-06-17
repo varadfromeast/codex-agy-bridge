@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -253,7 +254,7 @@ def test_finds_new_conversation_by_exact_prompt(tmp_path, monkeypatch):
                 "source": "USER_EXPLICIT",
                 "type": "USER_INPUT",
                 "status": "DONE",
-                "content": "<USER_REQUEST>unique prompt</USER_REQUEST>",
+                "content": "unique prompt",
             }
         )
         + "\n",
@@ -266,6 +267,40 @@ def test_finds_new_conversation_by_exact_prompt(tmp_path, monkeypatch):
             started_after=transcript.parent.parent.parent.parent.stat().st_mtime,
         )
         == "conversation-3"
+    )
+
+
+def test_conversation_prompt_lookup_does_not_match_overlapping_substrings(
+    tmp_path,
+    monkeypatch,
+):
+    brain = tmp_path / "brain"
+    monkeypatch.setattr(core, "BRAIN_DIR", brain)
+    for name, content in [
+        ("conversation-short", "deploy"),
+        ("conversation-long", "deploy production"),
+    ]:
+        transcript = brain / name / ".system_generated" / "logs" / "transcript.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(
+            json.dumps(
+                {
+                    "step_index": 0,
+                    "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT",
+                    "status": "DONE",
+                    "content": content,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    os.utime(brain / "conversation-short", (100.0, 100.0))
+    os.utime(brain / "conversation-long", (200.0, 200.0))
+
+    assert (
+        core.conversation_for_prompt_after("deploy", started_after=0)
+        == "conversation-short"
     )
 
 

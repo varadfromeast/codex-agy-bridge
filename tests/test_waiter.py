@@ -65,6 +65,34 @@ def test_wait_for_runs_timeout_ignores_ordinary_events_for_attention(tmp_path):
     assert result["runs"]["run-1"]["latest_event_id"] == "000000000002"
 
 
+def test_wait_for_runs_any_event_does_not_poll_prompt_detectors(
+    tmp_path,
+    monkeypatch,
+):
+    state_root = tmp_path / "state"
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    core.atomic_write_json(
+        core.state_path("run-1", state_root=state_root),
+        {"run_id": "run-1", "status": "running", "tmux_session": "agy-run-1"},
+    )
+    session_events.append_event(run_dir, "terminal_output_observed")
+    monkeypatch.setattr(
+        terminal,
+        "capture_pane",
+        lambda *_args, **_kwargs: pytest.fail("prompt polling is unnecessary"),
+    )
+
+    result = wait_for_runs(
+        {"run-1": run_dir},
+        state_root=state_root,
+        condition="any_event",
+        timeout_seconds=10,
+    )
+
+    assert result["matched"] is True
+    assert result["events"][0]["kind"] == "terminal_output_observed"
+
+
 def test_wait_for_runs_attention_wakes_on_progress_stalled(tmp_path):
     state_root = tmp_path / "state"
     run_dir = core.run_dir("run-1", state_root=state_root)

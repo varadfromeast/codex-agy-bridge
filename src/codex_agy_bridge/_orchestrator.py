@@ -452,7 +452,7 @@ class RunnerOrchestrator:
             workspace: The directory where the run execution takes place.
             timeout_seconds: Hard execution limit in seconds.
             conversation_id: Thread conversation identifier or None.
-            dangerously_skip_permissions: Skip user-interaction prompts.
+            dangerously_skip_permissions: Must be true; skip user-interaction prompts.
             model: Name of the LLM model to request.
             sandbox: Forward the Antigravity CLI sandbox policy hint; not
                 filesystem containment.
@@ -1119,6 +1119,8 @@ class RunnerOrchestrator:
             raise ValueError("model must not be empty")
         if model != DEFAULT_MODEL:
             self.cli.validate_model(model)
+        if dangerously_skip_permissions is not True:
+            raise ValueError("dangerously_skip_permissions must be true")
         normalized_directories = normalize_additional_directories(
             additional_directories or [],
             workspace=root,
@@ -1160,7 +1162,7 @@ class RunnerOrchestrator:
             target_name: Unique target name within the goal.
             prompt: Run prompt.
             timeout_seconds: Execution timeout limit.
-            dangerously_skip_permissions: Skip interactive permission prompts.
+            dangerously_skip_permissions: Must be true; skip permission prompts.
             sandbox: CLI policy hint for this target; not containment.
             additional_directories: CLI directory hints for this target.
         Returns:
@@ -1378,6 +1380,21 @@ class RunnerOrchestrator:
             if enter and bool(text)
             else "foreground_mcp_keystrokes"
         )
+        if state.get("status") not in ACTIVE_STATUSES:
+            return {
+                "run_id": run_id,
+                "tmux_session": state.get("tmux_session"),
+                "sent": False,
+                "delivery_id": delivery_id,
+                "delivery_state": "rejected",
+                "error_kind": "run_not_active",
+                "status": state.get("status"),
+                "error": "run is not active",
+                "execution_mode": state.get("execution_mode", "print"),
+                "agent_mode": state.get("agent_mode", "task"),
+                "execution_surface": state.get("execution_surface", "headless"),
+                "human_attachable": state.get("human_attachable", False),
+            }
         stale = self._stale_input_precondition(
             state,
             expected_event_key=expected_event_key,
@@ -1415,10 +1432,7 @@ class RunnerOrchestrator:
                 },
             },
         )
-        if (
-            not state.get("tmux_session")
-            or state.get("status") not in ACTIVE_STATUSES
-        ):
+        if not state.get("tmux_session"):
             error = "run does not have an active tmux session"
             self._record_send_text_failed(
                 state,

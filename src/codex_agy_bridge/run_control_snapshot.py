@@ -57,10 +57,13 @@ class RunControlSnapshot(dict[str, Any]):
             and state["status"] in ACTIVE_STATUSES
             and latest_kind not in ATTENTION_SUPPRESSING_EVENTS
         ):
+            effective_capture_timeout = (
+                0.0 if attention.get("required") else prompt_capture_timeout_seconds
+            )
             detected_attention = _detected_attention(
                 run_dir,
                 state,
-                capture_timeout_seconds=prompt_capture_timeout_seconds,
+                capture_timeout_seconds=effective_capture_timeout,
             )
             if detected_attention is not None and (
                 not attention.get("required")

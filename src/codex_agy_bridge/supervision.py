@@ -15,6 +15,22 @@ from codex_agy_bridge.prompt_detector import PromptDetector
 from codex_agy_bridge.state import RunState
 from codex_agy_bridge.transcript import TranscriptHarvester
 
+INCOMPLETE_RESPONSE_PHRASES = (
+    "i am waiting",
+    "i'm waiting",
+    "waiting for the background",
+    "waiting for tests",
+    "still running",
+    "still in progress",
+    "once it finishes",
+    "when it finishes",
+)
+
+
+def _looks_like_incomplete_response(response: str) -> bool:
+    text = " ".join(response.casefold().split())
+    return any(phrase in text for phrase in INCOMPLETE_RESPONSE_PHRASES)
+
 
 class RunSupervisor:
     """Launch, monitor, and persist the terminal outcome of one run."""
@@ -369,6 +385,9 @@ class RunSupervisor:
                 if response
                 else f"agy exited with code {return_code} without a response"
             )
+        elif response and _looks_like_incomplete_response(response):
+            status = "failed"
+            error = "agy exited before a final response"
         elif response:
             status, error = "completed", None
         else:

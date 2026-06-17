@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from codex_agy_bridge import core, session_events
+import pytest
+
+from codex_agy_bridge import core, session_events, terminal
 from codex_agy_bridge.run_control_snapshot import RunControlSnapshot
 
 
@@ -67,6 +69,44 @@ def test_run_control_snapshot_clears_attention(tmp_path):
 
     assert snapshot["activity_state"] == "working"
     assert snapshot["attention"]["required"] is False
+
+
+def test_run_control_snapshot_does_not_repoll_when_attention_is_active(
+    tmp_path,
+    monkeypatch,
+):
+    state_root = tmp_path / "state"
+    run_id = "run-active-attention"
+    run_dir = core.run_dir(run_id, state_root=state_root)
+    core.atomic_write_json(
+        core.state_path(run_id, state_root=state_root),
+        {
+            "run_id": run_id,
+            "status": "running",
+            "tmux_session": "agy-active-attention",
+        },
+    )
+    session_events.append_event(
+        run_dir,
+        "needs_attention",
+        {
+            "category": "approval_prompt",
+            "observed": {
+                "prompt": "Do you want to proceed?",
+                "suggested_inputs": ["y", "n"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        terminal,
+        "capture_pane",
+        lambda *_args, **_kwargs: pytest.fail("active attention is already known"),
+    )
+
+    snapshot = RunControlSnapshot.from_run(run_id, state_root=state_root)
+
+    assert snapshot["attention"]["required"] is True
+    assert snapshot["activity_state"] == "awaiting_user"
 
 
 def test_run_control_snapshot_suppresses_stale_attention_after_terminal_status(

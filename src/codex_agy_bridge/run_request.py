@@ -79,6 +79,8 @@ class RunRequest:
                 conversation_id,
                 "conversation_id",
             )
+        if dangerously_skip_permissions is not True:
+            raise ValueError("dangerously_skip_permissions must be true")
         root = Path(workspace).expanduser().resolve()
         if not root.is_dir():
             raise WorkspaceAccessError(f"workspace is not a directory: {root}")
@@ -119,7 +121,7 @@ class RunRequest:
             workspace=str(root),
             timeout_seconds=timeout_seconds,
             conversation_id=conversation_id,
-            dangerously_skip_permissions=dangerously_skip_permissions,
+            dangerously_skip_permissions=True,
             model=effective_model,
             sandbox=sandbox,
             additional_directories=list(normalized_directories),
@@ -135,7 +137,7 @@ class RunRequest:
             workspace=root,
             timeout_seconds=timeout_seconds,
             conversation_id=conversation_id,
-            dangerously_skip_permissions=dangerously_skip_permissions,
+            dangerously_skip_permissions=True,
             model=effective_model,
             sandbox=sandbox,
             additional_directories=normalized_directories,

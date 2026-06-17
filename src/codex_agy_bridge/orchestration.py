@@ -133,7 +133,7 @@ def create_run(
         workspace: The directory where the run execution takes place.
         timeout_seconds: Hard execution limit in seconds.
         conversation_id: Thread conversation identifier or None.
-        dangerously_skip_permissions: Skip user-interaction prompts.
+        dangerously_skip_permissions: Must be true; skip user-interaction prompts.
         model: Name of the LLM model to request.
         sandbox: Forward the Antigravity CLI sandbox policy hint; not
             filesystem containment.
@@ -343,7 +343,7 @@ def start_goal_target(
         target_name: Unique target name within the goal.
         prompt: Run prompt.
         timeout_seconds: Execution timeout limit.
-        dangerously_skip_permissions: Skip interactive permission prompts.
+        dangerously_skip_permissions: Must be true; skip permission prompts.
         sandbox: CLI policy hint for this target; not containment.
         additional_directories: CLI directory hints for this target.
     Returns:

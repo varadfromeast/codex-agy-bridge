@@ -252,7 +252,7 @@ These are not remaining work unless a deeper redesign is desired:
 - CLI capabilities discovery is locked.
 - Interactive input pop is conditional on successful send and state update.
 - Tmux descendant signaling revalidates against a captured parent tree.
-- `dangerously_skip_permissions` is honored instead of hardcoded.
+- `dangerously_skip_permissions` is forced true and false/null inputs are rejected.
 - `terminal.attach` escapes session names before AppleScript interpolation.
 - Identifiers are tightened to a safe character set.
 - `send_text` rejects oversized input with `input_too_large`.
@@ -270,4 +270,3 @@ These are not remaining work unless a deeper redesign is desired:
 6. Add per-request-key start locks.
 7. Split read model from command handler.
 8. Split `_orchestrator.py` by responsibility.
-

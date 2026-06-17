@@ -202,11 +202,20 @@ def stop(session: str) -> None:
         survivors = [
             pid
             for pid in survivors
-            if _process_matches_captured_tree(pid, captured_tree)
+            if _process_matches_captured_tree(
+                pid,
+                captured_tree,
+                allow_reparented=True,
+            )
         ]
         if survivors:
             time.sleep(0.05)
-    _signal_processes(survivors, signal.SIGKILL, captured_tree=captured_tree)
+    _signal_processes(
+        survivors,
+        signal.SIGKILL,
+        captured_tree=captured_tree,
+        allow_reparented=True,
+    )
 
 
 def _pane_pid(session: str) -> int | None:
@@ -272,10 +281,15 @@ def _signal_processes(
     sig: signal.Signals,
     *,
     captured_tree: dict[int, int] | None = None,
+    allow_reparented: bool = False,
 ) -> None:
     process_groups: set[int] = set()
     for pid in pids:
-        if not _process_matches_captured_tree(pid, captured_tree):
+        if not _process_matches_captured_tree(
+            pid,
+            captured_tree,
+            allow_reparented=allow_reparented,
+        ):
             continue
         try:
             process_groups.add(os.getpgid(pid))
@@ -287,7 +301,11 @@ def _signal_processes(
         except (ProcessLookupError, PermissionError):
             continue
     for pid in pids:
-        if not _process_matches_captured_tree(pid, captured_tree):
+        if not _process_matches_captured_tree(
+            pid,
+            captured_tree,
+            allow_reparented=allow_reparented,
+        ):
             continue
         try:
             os.kill(pid, sig)
@@ -298,6 +316,8 @@ def _signal_processes(
 def _process_matches_captured_tree(
     pid: int,
     captured_tree: dict[int, int] | None,
+    *,
+    allow_reparented: bool = False,
 ) -> bool:
     if captured_tree is None:
         return _process_alive(pid)
@@ -305,7 +325,9 @@ def _process_matches_captured_tree(
     if expected_parent is None:
         return False
     current_parent = _parent_pid(pid)
-    return current_parent == expected_parent
+    if current_parent == expected_parent:
+        return True
+    return allow_reparented and _process_alive(pid)
 
 
 def _parent_pid(pid: int) -> int | None:

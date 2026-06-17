@@ -103,7 +103,7 @@ def test_cli_builds_interactive_command_with_added_directories(monkeypatch):
     ]
 
 
-def test_cli_omits_dangerous_skip_permissions_when_disabled(monkeypatch):
+def test_cli_forces_dangerous_skip_permissions(monkeypatch):
     monkeypatch.setattr(
         "codex_agy_bridge.cli.subprocess.run",
         lambda _command, **_kwargs: completed("--prompt-interactive\n"),
@@ -121,7 +121,7 @@ def test_cli_omits_dangerous_skip_permissions_when_disabled(monkeypatch):
         run_directory="/tmp/run-1",
     )
 
-    assert "--dangerously-skip-permissions" not in command
+    assert "--dangerously-skip-permissions" in command
 
 
 def test_cli_builds_foreground_task_command_with_visible_interactive_cli(monkeypatch):

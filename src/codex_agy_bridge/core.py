@@ -295,10 +295,21 @@ def conversation_for_prompt_after(
             if (
                 step.get("source") == "USER_EXPLICIT"
                 and step.get("type") == "USER_INPUT"
-                and prompt in str(step.get("content", ""))
+                and _user_content_matches_prompt(str(step.get("content", "")), prompt)
             ):
                 return conversation_id
     return None
+
+
+def _user_content_matches_prompt(content: str, prompt: str) -> bool:
+    if content == prompt:
+        return True
+    match = re.fullmatch(
+        r"\s*<USER_REQUEST>(?P<prompt>.*)</USER_REQUEST>\s*",
+        content,
+        re.S,
+    )
+    return bool(match and match.group("prompt") == prompt)
 
 
 def transcript_path(conversation_id: str) -> Path:

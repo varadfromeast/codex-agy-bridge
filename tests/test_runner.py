@@ -91,7 +91,7 @@ def test_new_run_ignores_unmatched_workspace_conversation(monkeypatch, tmp_path)
             "requested_conversation_id": None,
             "model": None,
             "previous_conversation_id": "old-conversation",
-            "dangerously_skip_permissions": False,
+            "dangerously_skip_permissions": True,
             "prompt": "Do the work",
             "created_at": "2026-06-12T00:00:00+00:00",
         }

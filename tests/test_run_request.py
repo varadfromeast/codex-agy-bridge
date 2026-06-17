@@ -40,7 +40,7 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
         workspace=str(workspace),
         timeout_seconds=30,
         conversation_id=None,
-        dangerously_skip_permissions=False,
+        dangerously_skip_permissions=True,
         model=None,
         default_model="default",
         sandbox=True,
@@ -64,14 +64,14 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
 
     assert request.workspace == workspace.resolve()
     assert request.additional_directories == (str(extra.resolve()),)
-    assert request.dangerously_skip_permissions is False
+    assert request.dangerously_skip_permissions is True
     assert request.request_key
     assert state["request_key"] == request.request_key
     assert state["session_label"] == "agy-work-run-1"
     assert state["agent_mode"] == "task"
     assert state["execution_surface"] == "foreground"
     assert state["human_attachable"] is True
-    assert state["dangerously_skip_permissions"] is False
+    assert state["dangerously_skip_permissions"] is True
     assert state["prompt"].startswith("Task:\ndo work")
     assert "\nAcceptance:\n" in state["prompt"]
     assert "\nConstraints:\n" in state["prompt"]
@@ -79,6 +79,34 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
     assert "\nCompletion marker:\nDONE" in state["prompt"]
     assert state["prompt"].endswith("DONE")
     assert state["previous_conversation_id"] == "previous"
+
+
+def test_run_request_rejects_disabled_dangerous_permission_skip(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match="dangerously_skip_permissions must be true",
+    ):
+        RunRequest.prepare(
+            prompt="do work",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            dangerously_skip_permissions=False,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
+            goal_id=None,
+            target_name=None,
+            cli=FakeCli(),
+        )
 
 
 def test_interactive_run_request_does_not_add_completion_marker(tmp_path):
@@ -89,7 +117,7 @@ def test_interactive_run_request_does_not_add_completion_marker(tmp_path):
         workspace=str(workspace),
         timeout_seconds=30,
         conversation_id=None,
-        dangerously_skip_permissions=False,
+        dangerously_skip_permissions=True,
         model=None,
         default_model="default",
         sandbox=False,
@@ -126,7 +154,7 @@ def test_foreground_task_requires_prompt_interactive_support(tmp_path):
             workspace=str(workspace),
             timeout_seconds=30,
             conversation_id=None,
-            dangerously_skip_permissions=False,
+            dangerously_skip_permissions=True,
             model=None,
             default_model="default",
             sandbox=False,
@@ -178,7 +206,7 @@ def test_run_request_rejects_nul_prompt(tmp_path):
             workspace=str(workspace),
             timeout_seconds=30,
             conversation_id=None,
-            dangerously_skip_permissions=False,
+            dangerously_skip_permissions=True,
             model=None,
             default_model="default",
             sandbox=False,
@@ -203,7 +231,7 @@ def test_run_request_rejects_oversized_prompt(tmp_path):
             workspace=str(workspace),
             timeout_seconds=30,
             conversation_id=None,
-            dangerously_skip_permissions=False,
+            dangerously_skip_permissions=True,
             model=None,
             default_model="default",
             sandbox=False,
@@ -226,7 +254,7 @@ def test_run_request_rejects_blank_workspace(workspace):
             workspace=workspace,
             timeout_seconds=30,
             conversation_id=None,
-            dangerously_skip_permissions=False,
+            dangerously_skip_permissions=True,
             model=None,
             default_model="default",
             sandbox=False,
@@ -255,7 +283,7 @@ def test_run_request_rejects_unsafe_conversation_id(tmp_path, conversation_id):
             workspace=str(workspace),
             timeout_seconds=30,
             conversation_id=conversation_id,
-            dangerously_skip_permissions=False,
+            dangerously_skip_permissions=True,
             model=None,
             default_model="default",
             sandbox=False,
@@ -283,7 +311,7 @@ def test_additional_directory_order_is_canonical(tmp_path):
         workspace=str(workspace),
         timeout_seconds=30,
         conversation_id=None,
-        dangerously_skip_permissions=False,
+        dangerously_skip_permissions=True,
         model=None,
         default_model="default",
         sandbox=False,
@@ -301,7 +329,7 @@ def test_additional_directory_order_is_canonical(tmp_path):
         workspace=str(workspace),
         timeout_seconds=30,
         conversation_id=None,
-        dangerously_skip_permissions=False,
+        dangerously_skip_permissions=True,
         model=None,
         default_model="default",
         sandbox=False,

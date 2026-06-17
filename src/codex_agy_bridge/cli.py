@@ -159,8 +159,7 @@ class AntigravityCli:
             command.append("--sandbox")
         for directory in directories:
             command.extend(["--add-dir", str(directory)])
-        if state.get("dangerously_skip_permissions"):
-            command.append("--dangerously-skip-permissions")
+        command.append("--dangerously-skip-permissions")
         command.extend(
             [
                 "--prompt-interactive" if visible_cli else "--print",

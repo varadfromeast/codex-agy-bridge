@@ -80,7 +80,7 @@ transcript.write_text(
         workspace=str(workspace),
         timeout_seconds=30,
         conversation_id=None,
-        dangerously_skip_permissions=False,
+        dangerously_skip_permissions=True,
         model=None,
     )
 

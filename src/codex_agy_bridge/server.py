@@ -92,8 +92,8 @@ def agy_run_start(
 
     mode="task" starts a normal bridge-owned task. mode="interactive" starts a
     persistent conversation session that should be used sparingly. Supplying
-    conversation_id continues that exact Antigravity conversation. When
-    dangerously_skip_permissions is true, the bridge forwards
+    conversation_id continues that exact Antigravity conversation.
+    dangerously_skip_permissions must be true; the bridge always forwards
     --dangerously-skip-permissions to Antigravity.
     """
     if mode not in {"task", "interactive"}:
@@ -241,7 +241,10 @@ def agy_goal(
     additional_directories: list[str] | None = None,
     dangerously_skip_permissions: bool | None = True,
 ) -> dict[str, Any]:
-    """Manage bridge scheduler goals with actions create, start_target, status."""
+    """Manage bridge scheduler goals with actions create, start_target, status.
+
+    dangerously_skip_permissions must be true when supplied.
+    """
     if action == "create":
         if objective is None or workspace is None:
             raise ValueError("objective and workspace are required for create")

@@ -62,6 +62,49 @@ def test_supervisor_classifies_successful_exit(monkeypatch, tmp_path):
     assert events[-1]["status"] == "completed"
 
 
+def test_supervisor_does_not_complete_on_finally_waiting_text(monkeypatch, tmp_path):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "requested_conversation_id": "conversation-1",
+        "completion_marker": "DONE_MARKER",
+        "prompt": "review the branch",
+    }
+    updates = []
+
+    class FakeHarvester:
+        latest_response = "I am waiting for the background test suite to finish."
+
+        def __init__(self, _conversation_id, _path):
+            pass
+
+        def poll(self):
+            return []
+
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.TranscriptHarvester",
+        FakeHarvester,
+    )
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+
+    result = RunSupervisor("run-1")._finish_after_exit()
+
+    assert result == 1
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["result"] == (
+        "I am waiting for the background test suite to finish."
+    )
+    assert updates[-1]["error"] == "agy exited before a final response"
+    assert session_events.read_events(tmp_path)[-1]["kind"] == "run_failed"
+
+
 def test_supervisor_launch_emits_run_started(monkeypatch, tmp_path):
     state = {
         "run_id": "run-1",

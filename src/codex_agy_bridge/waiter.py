@@ -49,11 +49,15 @@ def wait_for_runs(
         timeout_seconds,
         run_count=len(run_dirs),
     )
-    detectors = _prompt_detectors(
-        run_dirs,
-        state_root=state_root,
-        load_state=load_state,
-        capture_timeout_seconds=prompt_capture_timeout_seconds,
+    detectors = (
+        _prompt_detectors(
+            run_dirs,
+            state_root=state_root,
+            load_state=load_state,
+            capture_timeout_seconds=prompt_capture_timeout_seconds,
+        )
+        if condition == "any_attention"
+        else {}
     )
 
     while True:

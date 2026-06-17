@@ -28,6 +28,8 @@ def test_local_process_manager_treats_zombie_child_as_dead():
         assert state.startswith("Z")
 
         assert LocalProcessManager().is_alive(pid) is False
+        reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        assert reaped_pid == pid
     finally:
         with suppress(ChildProcessError):
             os.waitpid(pid, 0)
