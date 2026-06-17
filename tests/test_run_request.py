@@ -60,6 +60,7 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
         session_label="agy-work-run-1",
         tmux_session="agy-run-1",
         completion_marker="DONE",
+        artifact_dir=str(tmp_path / "state" / "runs" / "run-1" / "artifacts"),
     )
 
     assert request.workspace == workspace.resolve()
@@ -75,6 +76,8 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
     assert state["prompt"].startswith("Task:\ndo work")
     assert "\nAcceptance:\n" in state["prompt"]
     assert "\nConstraints:\n" in state["prompt"]
+    assert "Write reports or handoff files under:" in state["prompt"]
+    assert state["artifact_dir"].endswith("/state/runs/run-1/artifacts")
     assert "\nExpected output:\n" in state["prompt"]
     assert "\nCompletion marker:\nDONE" in state["prompt"]
     assert state["prompt"].endswith("DONE")

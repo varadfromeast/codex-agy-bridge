@@ -424,6 +424,8 @@ class RunnerOrchestrator:
             run_id = f"{timestamp}-{uuid.uuid4().hex[:8]}"
             directory = self.run_dir(run_id)
             directory.mkdir(parents=True, exist_ok=False)
+            artifact_dir = directory / "artifacts"
+            artifact_dir.mkdir()
             now = core.utc_now()
             session_label = labels.session_label(
                 seed=request.target_name or request.prompt,
@@ -442,6 +444,7 @@ class RunnerOrchestrator:
                 session_label=session_label,
                 tmux_session=session_label,
                 completion_marker=f"AGY_RUN_COMPLETE_{uuid.uuid4().hex}",
+                artifact_dir=str(artifact_dir),
             )
             self.store.save_run(run_id, state)
         # Lock released — spawn subprocess without blocking other create_run callers.
@@ -586,6 +589,7 @@ class RunnerOrchestrator:
                 "latest_event_key": snapshot["latest_event_key"],
                 "latest_transcript_step": snapshot["latest_transcript_step"],
                 "terminal_tail_available": snapshot["terminal_tail_available"],
+                "artifact_dir": state.get("artifact_dir"),
                 "notification_resource_uri": state.get("notification_resource_uri"),
                 "wait_tool": state.get("wait_tool", "agy_run_wait"),
                 "latest_step": latest,
@@ -602,6 +606,7 @@ class RunnerOrchestrator:
             "stdout": str(self.run_dir(run_id) / "agy.stdout.log"),
             "stderr": str(self.run_dir(run_id) / "agy.stderr.log"),
             "terminal_progress": str(self.run_dir(run_id) / "terminal-progress.log"),
+            "artifacts": str(self.run_dir(run_id) / "artifacts"),
         }
         conversation_id = state.get("conversation_id")
         if conversation_id:

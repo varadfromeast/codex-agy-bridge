@@ -7,6 +7,7 @@ import time
 import traceback
 from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 
 from codex_agy_bridge import interactive_input, session_events, terminal
 from codex_agy_bridge import runner as runtime
@@ -164,6 +165,9 @@ class RunSupervisor:
             self._observe_progress_stall()
             self._deliver_interactive_input()
             response = self._response()
+            terminal_response = self._terminal_completion_response()
+            if terminal_response is not None:
+                response = response or terminal_response
             if self._completion_is_stable(response):
                 self._finish(
                     status="completed",
@@ -346,6 +350,34 @@ class RunSupervisor:
     def _response(self) -> str | None:
         return self.harvester.latest_response if self.harvester else None
 
+    def _terminal_completion_response(self) -> str | None:
+        marker = str(self.state["completion_marker"])
+        if not marker:
+            return None
+        for text in self._terminal_completion_candidates():
+            marker_at = text.find(marker)
+            if marker_at >= 0:
+                return text[: marker_at + len(marker)]
+        return None
+
+    def _terminal_completion_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        for name in (
+            "terminal.log",
+            "terminal-progress.log",
+            "agy.stdout.log",
+            "agy.stderr.log",
+        ):
+            text = _read_tail(self.directory / name, 80_000)
+            if text:
+                candidates.append(terminal.clean_text(text))
+        if self.session:
+            with suppress(terminal.TmuxCommandError):
+                snapshot = terminal.capture_pane(self.session, timeout_seconds=0.2)
+                if snapshot:
+                    candidates.append(terminal.clean_text(snapshot))
+        return candidates
+
     def _completion_is_stable(self, response: str | None) -> bool:
         marker = str(self.state["completion_marker"])
         if marker and response and marker in response:
@@ -466,3 +498,13 @@ def _terminal_event_kind(status: str) -> str:
     if status == "canceled":
         return "run_canceled"
     return "run_failed"
+
+
+def _read_tail(path: Path, max_bytes: int) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - max_bytes))
+            return handle.read(max_bytes).decode("utf-8", errors="replace")
+    except OSError:
+        return ""

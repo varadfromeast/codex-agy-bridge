@@ -305,6 +305,54 @@ def test_supervisor_treats_explicit_completion_marker_as_stable(
     assert supervisor._completion_is_stable("final response DONE_MARKER")
 
 
+def test_supervisor_completes_when_marker_only_appears_in_terminal(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    updates = []
+    active = [True]
+    (tmp_path / "terminal.log").write_text(
+        "Final answer from the visible pane.\nDONE_MARKER\n$ ",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "run_active", lambda _session: active[0])
+    monkeypatch.setattr(
+        runner,
+        "stop_run",
+        lambda _session: active.__setitem__(0, False),
+    )
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.RunSupervisor._observe_conversation",
+        lambda _self: None,
+    )
+
+    supervisor = RunSupervisor("run-1")
+    supervisor.session = "agy-run-1"
+
+    assert supervisor._monitor_until_exit() == 0
+    assert updates[-1]["status"] == "completed"
+    assert updates[-1]["result"] == "Final answer from the visible pane."
+    assert active == [False]
+    assert (tmp_path / "final-result.txt").read_text(encoding="utf-8") == (
+        "Final answer from the visible pane."
+    )
+    assert session_events.read_events(tmp_path)[-1]["kind"] == "run_completed"
+
+
 def test_supervisor_treats_stable_done_response_as_completed_without_marker(
     monkeypatch, tmp_path
 ):
