@@ -33,6 +33,91 @@ defect.
     provider showed a feedback prompt (`How's the CLI experience so far?`) that
     was not classified as attention.
 
+## Planned Live Batch 11: 12-Session Ad Hoc MCP Input Storm
+
+Goal: stress the MCP server, tmux execution sessions, sparse event waits, and
+`agy_run_input` delivery path with more than ten simultaneously active
+Antigravity sessions while Codex sends unscripted-looking input to selected
+runs. This batch is intentionally live-only: only direct calls through
+`mcp__codex_agy_bridge` count, and repository tests are added only after a live
+call exposes a confirmed defect.
+
+Preflight gates:
+
+- [ ] 101. Run `agy_admin(action="doctor")` and require `active_runs == 0`,
+  writable state storage, readable Antigravity root, working `agy`, and
+  `configured_parallel_limit >= 12`.
+- [ ] 102. Confirm the live run uses Antigravity CLI 1.0.9 or newer and that
+  `tmux.server_running` may be either false or true before the batch starts.
+- [ ] 103. Create `/tmp/agy-bridge-live-batch-11` as the narrow workspace and
+  keep all prompts constrained to that directory.
+
+Launch wave:
+
+- [ ] 104. Start 12 parallel `agy_run_start` sessions with unique prompts,
+  `timeout_seconds=900`, `dangerously_skip_permissions=false`, and the default
+  model. Each prompt must instruct the run to wait for operator messages,
+  echo each received token as `ACK <run-label> <token>`, and finish only after
+  receiving `FINALIZE <run-label>`.
+- [ ] 105. Verify all 12 start calls return distinct `run_id` values and that
+  every persisted/public policy reports `dangerously_skip_permissions=true`.
+- [ ] 106. Call `agy_run_wait(condition="any_event")` across all 12 runs with a
+  short timeout, then call `agy_run_observe(view="full")` with
+  `include_terminal_tail=true` to capture the baseline cursor/event state.
+- [ ] 107. Verify aggregate status shows no more than 12 active runs, no
+  unexpected failure, and no hidden attention prompt.
+
+Ad hoc input storm:
+
+- [ ] 108. Select a rotating subset of 8 runs and send 32 total
+  `agy_run_input` messages with `enter=true`; use fresh
+  `expected_event_key` or `expected_transcript_step` when available. Messages
+  should mix short tokens, punctuation, repeated words, and one multiline input.
+- [ ] 109. In parallel with the input storm, repeatedly call
+  `agy_run_wait(condition="any_event")` on all 12 runs and targeted
+  `agy_run_observe(view="terminal")` on any run whose wait times out.
+- [ ] 110. Send 6 intentionally stale guarded inputs to selected runs by using
+  previously observed event keys; require bounded stale-write rejections with
+  fresh compact status, not delivery to the terminal.
+- [ ] 111. Send 4 unguarded recovery inputs to the same selected runs and
+  require `mcp_input_submitted` followed by either `mcp_input_delivered` or a
+  bounded `mcp_input_failed` event.
+- [ ] 112. Query `agy_run_observe(view="transcript")` for every selected run
+  and require that transcript bounds, cursors, and content hiding still behave
+  coherently under churn.
+
+Finalize and cleanup:
+
+- [ ] 113. Send `FINALIZE <run-label>` to the 8 selected runs and verify they
+  converge to `completed` or a classified provider failure with no stale
+  `attention_required=true` after terminal state.
+- [ ] 114. Cancel the 4 unselected runs concurrently, repeat cancellation once,
+  and require terminal `canceled` states plus bounded post-cancel input errors.
+- [ ] 115. Read `agy_run_result` for completed runs and confirm completion
+  markers and private prompt text are not exposed.
+- [ ] 116. Run `agy_admin(action="doctor")` and require `active_runs == 0`
+  after cleanup, with the MCP server still responsive to a normal bounded
+  unknown-run error.
+
+Pass criteria:
+
+- [ ] 117. All MCP calls return within their tool timeout; no call wedges the
+  client.
+- [ ] 118. `agy_run_input` never blocks waiting for an Antigravity response.
+- [ ] 119. Wait cursors advance monotonically per run, and global event keys are
+  usable for cache/stale-write guards.
+- [ ] 120. Terminal observation remains bounded and useful after suspicious
+  waits or provider-side feedback prompts.
+- [ ] 121. Global capacity is released after completion/cancellation; no orphan
+  tmux sessions remain for the 12 run IDs.
+
+Abort criteria:
+
+- [ ] 122. Stop the batch and cancel all known run IDs if active runs exceed 12,
+  two consecutive MCP calls time out, any run exposes private prompt text in
+  compact status, or any terminal prompt asks for broad filesystem/network
+  approval despite forced permission skip.
+
 ## Live Batch 1: API Error Isolation And Goal Validation
 
 - [x] 01. Unknown run status returns a bounded tool error.

@@ -10,9 +10,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeAlias, cast
-
-from filelock import FileLock
+from typing import Any, TypeAlias
 
 from codex_agy_bridge.exceptions import RunNotFoundError
 from codex_agy_bridge.state import (
@@ -110,29 +108,10 @@ def load_state(run_id: str, state_root: Path | None = None) -> RunState:
 def update_state(
     run_id: str, state_root: Path | None = None, **changes: Any
 ) -> RunState:
-    """Update run state fields under an exclusive file lock.
+    """Compatibility shim for updating a run through the disk store."""
+    from codex_agy_bridge.store import DiskRunStore
 
-    The active/ registry sentinel is managed solely by
-    :class:`~codex_agy_bridge.store.DiskRunStore`, which is always the
-    caller's storage layer when a store adapter is in use.  This function
-    handles the raw-filesystem path (no store) and therefore also cleans
-    the sentinel when transitioning to a terminal status, keeping the two
-    code paths consistent.
-    """
-    lock = FileLock(str(run_dir(run_id, state_root) / "state.lock"), timeout=10)
-    with lock:
-        state = load_state(run_id, state_root)
-        cast(dict[str, Any], state).update(changes)
-        state["updated_at"] = utc_now()
-        atomic_write_json(state_path(run_id, state_root), state)
-        # Sentinel cleanup: only needed when called outside the store layer
-        # (e.g. directly from runner.py).  DiskRunStore.save_run handles
-        # this itself, but a second unlink() is idempotent and safe.
-        if state.get("status") in TERMINAL_STATUSES:
-            active_file = (state_root or STATE_ROOT) / "active" / run_id
-            with suppress(OSError):
-                active_file.unlink()
-        return validate_run_state(state)
+    return DiskRunStore(state_root or STATE_ROOT).update_run(run_id, changes)
 
 
 def load_goal(goal_id: str, state_root: Path | None = None) -> GoalState:
@@ -145,13 +124,10 @@ def load_goal(goal_id: str, state_root: Path | None = None) -> GoalState:
 def update_goal(
     goal_id: str, state_root: Path | None = None, **changes: Any
 ) -> GoalState:
-    lock = FileLock(str(goal_dir(goal_id, state_root) / "state.lock"), timeout=10)
-    with lock:
-        state = load_goal(goal_id, state_root)
-        cast(dict[str, Any], state).update(changes)
-        state["updated_at"] = utc_now()
-        atomic_write_json(goal_path(goal_id, state_root), state)
-        return validate_goal_state(state)
+    """Compatibility shim for updating a goal through the disk store."""
+    from codex_agy_bridge.store import DiskRunStore
+
+    return DiskRunStore(state_root or STATE_ROOT).update_goal(goal_id, changes)
 
 
 def public_state(state: dict[str, Any]) -> dict[str, Any]:

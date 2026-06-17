@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import sys
@@ -33,9 +34,6 @@ from codex_agy_bridge.run_request import (
     RunRequest,
     normalize_additional_directories,
 )
-from codex_agy_bridge.run_request import (
-    _request_key as _request_key,
-)
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
     TERMINAL_STATUSES,
@@ -55,6 +53,7 @@ CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
 )
 INPUT_MAX_BYTES = 65_536
+LOGGER = logging.getLogger(__name__)
 
 
 def _global_max_parallel() -> int:
@@ -389,12 +388,7 @@ class RunnerOrchestrator:
         Returns:
             The updated GoalState dict.
         """
-        with self.store.lock_goal(goal_id):
-            state = self.store.get_goal(goal_id)
-            cast(dict[str, Any], state).update(changes)
-            state["updated_at"] = core.utc_now()
-            self.store.save_goal(goal_id, state)
-            return state
+        return self.store.update_goal(goal_id, changes)
 
     def active_runs(self) -> list[RunState]:
         """List all active runs.
@@ -1066,8 +1060,10 @@ class RunnerOrchestrator:
                 self.process_manager.killpg(pid, signal.SIGKILL)
 
     def _process_alive(self, pid: int) -> bool:
-        with suppress(OSError, ValueError, TypeError):
+        try:
             return self.process_manager.is_alive(pid)
+        except (OSError, ValueError, TypeError):
+            LOGGER.debug("Suppressed process liveness failure", exc_info=True)
         return False
 
     def _reaper_can_kill_session(self, state: RunState) -> bool:

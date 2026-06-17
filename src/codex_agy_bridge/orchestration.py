@@ -15,9 +15,6 @@ from codex_agy_bridge._orchestrator import (
 from codex_agy_bridge._orchestrator import (
     RunnerOrchestrator,
 )
-from codex_agy_bridge._orchestrator import (
-    _request_key as _request_key,
-)
 from codex_agy_bridge.core import (
     active_runs as active_runs,
 )
@@ -76,6 +73,7 @@ from codex_agy_bridge.core import (
     utc_now as utc_now,
 )
 from codex_agy_bridge.process import ProcessManager as ProcessManager
+from codex_agy_bridge.run_request import _request_key as _request_key
 from codex_agy_bridge.state import GoalState, RunState
 
 

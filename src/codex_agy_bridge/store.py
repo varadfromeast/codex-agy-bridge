@@ -79,6 +79,10 @@ class RunStore(Protocol):
         """
         ...
 
+    def update_goal(self, goal_id: str, changes: dict[str, Any]) -> GoalState:
+        """Atomically update a goal."""
+        ...
+
     def lock_run(self, run_id: str) -> AbstractContextManager[Any]:
         """Acquire an exclusive transactional lock for a run.
 
@@ -179,6 +183,16 @@ class DiskRunStore:
         path = core.goal_path(goal_id, state_root=self.state_root)
         core.atomic_write_json(path, state)
 
+    def update_goal(self, goal_id: str, changes: dict[str, Any]) -> GoalState:
+        """Atomically apply changes to a goal."""
+        with self.lock_goal(goal_id):
+            state = self.get_goal(goal_id)
+            cast(dict[str, Any], state).update(changes)
+            state["updated_at"] = core.utc_now()
+            validated = validate_goal_state(state)
+            self.save_goal(goal_id, validated)
+            return validated
+
     def lock_run(self, run_id: str) -> AbstractContextManager[Any]:
         """Acquire a FileLock for the run state."""
         lock_path = core.run_dir(run_id, state_root=self.state_root) / "state.lock"
@@ -244,6 +258,16 @@ class MemoryRunStore:
     def save_goal(self, goal_id: str, state: GoalState) -> None:
         """Save goal state in memory."""
         self.goals[goal_id] = validate_goal_state(dict(state))
+
+    def update_goal(self, goal_id: str, changes: dict[str, Any]) -> GoalState:
+        """Atomically apply changes using the same semantics as disk storage."""
+        with self.lock_goal(goal_id):
+            state = self.get_goal(goal_id)
+            cast(dict[str, Any], state).update(changes)
+            state["updated_at"] = core.utc_now()
+            validated = validate_goal_state(state)
+            self.save_goal(goal_id, validated)
+            return validated
 
     def lock_run(self, run_id: str) -> AbstractContextManager[Any]:
         """Acquire an in-process reentrant lock for a run transaction."""

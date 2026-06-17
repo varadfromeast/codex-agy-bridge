@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from codex_agy_bridge import core
 from codex_agy_bridge.exceptions import RunNotFoundError
-from codex_agy_bridge.state import RunState
+from codex_agy_bridge.state import GoalState, RunState
 from codex_agy_bridge.store import DiskRunStore, MemoryRunStore
 
 
@@ -75,6 +76,45 @@ def test_disk_run_store_list_active_runs(tmp_path: Path):
     assert active[0]["run_id"] == "run-active"
 
 
+def test_core_update_state_uses_store_sentinel_rules(tmp_path: Path):
+    store = DiskRunStore(tmp_path)
+    store.save_run("run-terminal", {"run_id": "run-terminal", "status": "running"})
+    assert (tmp_path / "active" / "run-terminal").exists()
+
+    state = core.update_state(
+        "run-terminal",
+        state_root=tmp_path,
+        status="completed",
+    )
+
+    assert state["status"] == "completed"
+    assert not (tmp_path / "active" / "run-terminal").exists()
+
+
+def test_disk_run_store_update_goal(tmp_path: Path):
+    store = DiskRunStore(tmp_path)
+    goal_state: GoalState = {
+        "goal_id": "goal-123",
+        "objective": "parallel check",
+        "workspace": str(tmp_path),
+        "model": "model",
+        "max_parallel": 2,
+        "targets": {},
+        "created_at": "2026-06-14T21:00:00Z",
+        "updated_at": "2026-06-14T21:00:00Z",
+    }
+    store.save_goal("goal-123", goal_state)
+
+    updated = core.update_goal(
+        "goal-123",
+        state_root=tmp_path,
+        targets={"first": "run-1"},
+    )
+
+    assert updated["targets"] == {"first": "run-1"}
+    assert store.get_goal("goal-123")["targets"] == {"first": "run-1"}
+
+
 def test_memory_run_store():
     store = MemoryRunStore()
 
@@ -98,3 +138,23 @@ def test_memory_run_store():
 
     assert len(store.list_active_runs()) == 1
     assert store.list_active_runs()[0]["run_id"] == "run-mem"
+
+
+def test_memory_run_store_update_goal():
+    store = MemoryRunStore()
+    goal_state: GoalState = {
+        "goal_id": "goal-mem",
+        "objective": "parallel check",
+        "workspace": "/tmp",
+        "model": "model",
+        "max_parallel": 2,
+        "targets": {},
+        "created_at": "2026-06-14T21:00:00Z",
+        "updated_at": "2026-06-14T21:00:00Z",
+    }
+    store.save_goal("goal-mem", goal_state)
+
+    updated = store.update_goal("goal-mem", {"targets": {"first": "run-1"}})
+
+    assert updated["targets"] == {"first": "run-1"}
+    assert store.get_goal("goal-mem")["targets"] == {"first": "run-1"}
