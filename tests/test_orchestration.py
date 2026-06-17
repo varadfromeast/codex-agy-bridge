@@ -416,7 +416,7 @@ def test_observe_can_include_bounded_terminal_tail(monkeypatch, tmp_path):
     run_dir = core.run_dir("run-1", state_root=state_root)
     run_dir.mkdir(parents=True)
     (run_dir / "terminal-progress.log").write_text(
-        "old line\ncurrent prompt?\n",
+        "\x1b[31mold line\x1b[0m\r\ncurrent prompt?\n",
         encoding="utf-8",
     )
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
@@ -476,7 +476,7 @@ def test_terminal_snapshot_returns_raw_pane_and_control_affordance(
     run_dir = core.run_dir("run-1", state_root=state_root)
     run_dir.mkdir(parents=True)
     (run_dir / "terminal.log").write_text(
-        "previous terminal output\n",
+        "\x1b[32mprevious terminal output\x1b[0m\r\n",
         encoding="utf-8",
     )
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
@@ -485,7 +485,7 @@ def test_terminal_snapshot_returns_raw_pane_and_control_affordance(
     monkeypatch.setattr(
         orchestration.terminal,
         "capture_pane",
-        lambda session, **_kwargs: f"{session}: raw prompt waiting\n",
+        lambda session, **_kwargs: f"\x1b[33m{session}: raw prompt waiting\x1b[0m\r\n",
     )
 
     result = orchestration.terminal_snapshot("run-1", max_chars=80)
@@ -1203,6 +1203,16 @@ def test_status_fails_running_run_without_recorded_process(tmp_path):
     assert result["status"] == "failed"
     assert result["error"] == "runner exited before recording a terminal status"
     assert session.is_alive() is False
+    events = session_events.read_events(orchestrator.run_dir("run"))
+    assert events[-1]["kind"] == "run_failed"
+    assert events[-1]["status"] == "failed"
+    wait_result = orchestrator.wait(
+        ["run"],
+        condition="any_terminal",
+        timeout_seconds=0,
+    )
+    assert wait_result["matched"] is True
+    assert wait_result["events"][-1]["kind"] == "run_failed"
 
 
 def test_status_projects_attention_without_changing_lifecycle(tmp_path):
@@ -1299,6 +1309,9 @@ def test_status_fails_run_and_stops_session_when_supervisor_exits(tmp_path):
     assert result["status"] == "failed"
     assert result["error"] == "runner exited before recording a terminal status"
     assert session.is_alive() is False
+    events = session_events.read_events(orchestrator.run_dir("run"))
+    assert events[-1]["kind"] == "run_failed"
+    assert events[-1]["status"] == "failed"
 
 
 def test_status_marks_cancel_requested_dead_runner_as_canceled(tmp_path):
@@ -1327,6 +1340,16 @@ def test_status_marks_cancel_requested_dead_runner_as_canceled(tmp_path):
     assert result["status"] == "canceled"
     assert result["error"] is None
     assert session.is_alive() is False
+    events = session_events.read_events(orchestrator.run_dir("run"))
+    assert events[-1]["kind"] == "run_canceled"
+    assert events[-1]["status"] == "canceled"
+    wait_result = orchestrator.wait(
+        ["run"],
+        condition="any_terminal",
+        timeout_seconds=0,
+    )
+    assert wait_result["matched"] is True
+    assert wait_result["events"][-1]["kind"] == "run_canceled"
 
 
 def test_result_returns_preview_and_read_metadata_for_large_artifact(tmp_path):
@@ -1353,6 +1376,46 @@ def test_result_returns_preview_and_read_metadata_for_large_artifact(tmp_path):
         "read_with": "agy_run_result",
     }
     assert (tmp_path / "runs" / "run" / "final-result.txt").read_text() == "abcdef"
+
+
+def test_result_lists_files_mentioned_by_final_response(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "analysis_results.md").write_text("# Analysis\n", encoding="utf-8")
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "workspace": str(workspace),
+            "conversation_id": "conversation-1",
+            "result": (
+                "Wrote `analysis_results.md` and referenced `missing_report.md`."
+            ),
+            "error": None,
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    result = orchestrator.result("run")
+
+    assert result["result"]["artifacts"] == [
+        {
+            "path": "analysis_results.md",
+            "artifact_path": str(workspace / "analysis_results.md"),
+            "exists": True,
+            "total_bytes": 11,
+            "read_with": "filesystem",
+        },
+        {
+            "path": "missing_report.md",
+            "artifact_path": str(workspace / "missing_report.md"),
+            "exists": False,
+            "total_bytes": None,
+            "read_with": None,
+        },
+    ]
 
 
 def test_result_read_uses_independent_byte_offsets(tmp_path):

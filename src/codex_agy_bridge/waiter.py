@@ -11,7 +11,37 @@ from typing import Any, Literal
 from codex_agy_bridge import core, prompt_detector, run_control_snapshot, session_events
 from codex_agy_bridge.state import TERMINAL_STATUSES, RunState
 
-WaitCondition = Literal["any_event", "any_attention", "any_terminal", "all_terminal"]
+WaitCondition = Literal[
+    "any_event",
+    "any_attention",
+    "any_terminal",
+    "all_terminal",
+    "event",
+    "attention",
+    "terminal",
+    "finished",
+    "finish",
+    "complete",
+    "completed",
+    "result",
+    "all_finished",
+    "all_complete",
+    "all_completed",
+]
+CANONICAL_CONDITIONS = {"any_event", "any_attention", "any_terminal", "all_terminal"}
+CONDITION_ALIASES = {
+    "event": "any_event",
+    "attention": "any_attention",
+    "terminal": "any_terminal",
+    "finished": "any_terminal",
+    "finish": "any_terminal",
+    "complete": "any_terminal",
+    "completed": "any_terminal",
+    "result": "any_terminal",
+    "all_finished": "all_terminal",
+    "all_complete": "all_terminal",
+    "all_completed": "all_terminal",
+}
 
 ATTENTION_EVENTS = {
     "needs_attention",
@@ -37,8 +67,7 @@ def wait_for_runs(
     """Block until selected runs produce events matching ``condition``."""
     if not run_dirs:
         raise ValueError("run_ids must not be empty")
-    if condition not in {"any_event", "any_attention", "any_terminal", "all_terminal"}:
-        raise ValueError(f"unsupported wait condition: {condition}")
+    condition = _normalize_condition(condition)
     after = dict(after or {})
     timeout_seconds = max(0.0, timeout_seconds)
     started_at = time.monotonic()
@@ -461,3 +490,13 @@ def _result(
         "events": events,
         "runs": runs,
     }
+
+def _normalize_condition(condition: str) -> WaitCondition:
+    normalized = CONDITION_ALIASES.get(condition, condition)
+    if normalized not in CANONICAL_CONDITIONS:
+        supported = ", ".join(sorted({*CANONICAL_CONDITIONS, *CONDITION_ALIASES}))
+        raise ValueError(
+            f"unsupported wait condition: {condition}. Supported conditions: "
+            f"{supported}"
+        )
+    return normalized  # type: ignore[return-value]

@@ -22,8 +22,11 @@ from codex_agy_bridge import (
     interactive_input,
     labels,
     run_control_snapshot,
+    run_input_delivery,
+    run_results,
     session_events,
     terminal,
+    terminal_evidence,
     waiter,
 )
 from codex_agy_bridge.cli import AntigravityCli
@@ -36,7 +39,6 @@ from codex_agy_bridge.run_request import (
 )
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
-    TERMINAL_STATUSES,
     GoalState,
     RunState,
 )
@@ -45,14 +47,11 @@ from codex_agy_bridge.store import DiskRunStore, RunStore
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 50
 JANITOR_INTERVAL_SECONDS = 60
-RESULT_PREVIEW_BYTES = 4096
-RESULT_READ_MAX_BYTES = 262_144
 WAIT_TIMEOUT_MAX_SECONDS = 3600
 CANCEL_TERM_GRACE_SECONDS = 0.25
 CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
 )
-INPUT_MAX_BYTES = 65_536
 LOGGER = logging.getLogger(__name__)
 
 
@@ -88,105 +87,6 @@ def _observe_cursor(value: Any) -> dict[str, Any]:
         "event_id": event_id if isinstance(event_id, str) else None,
         "transcript_step": transcript_step if isinstance(transcript_step, int) else -1,
     }
-
-
-def _observe_terminal(
-    run_dir: Path,
-    state: RunState,
-    *,
-    tail_available: bool,
-    include_tail: bool,
-) -> dict[str, Any]:
-    result: dict[str, Any] = {"tail_available": tail_available}
-    if not include_tail:
-        return result
-    tail = _terminal_tail(run_dir)
-    if tail is not None:
-        result.update(tail)
-        return result
-    tmux_session = state.get("tmux_session")
-    if isinstance(tmux_session, str) and tmux_session:
-        try:
-            snapshot = terminal.capture_pane(tmux_session)
-        except terminal.TmuxCommandError as error:
-            result["prompt_snapshot_error"] = error.reason
-        else:
-            if snapshot:
-                result["tail_available"] = True
-                result["prompt_snapshot"] = snapshot[-6000:]
-                result["source"] = "tmux_capture"
-    return result
-
-
-def _terminal_tail(run_dir: Path) -> dict[str, Any] | None:
-    for name in (
-        "terminal.log",
-        "terminal-progress.log",
-        "agy.terminal.log",
-        "agy.stdout.log",
-        "agy.stderr.log",
-    ):
-        text = core._read_tail(run_dir / name, 6000)
-        if text:
-            return {
-                "tail_available": True,
-                "tail": text,
-                "source": name,
-            }
-    return None
-
-
-def _bounded_text(value: str, max_chars: int) -> dict[str, Any]:
-    limit = max(1, max_chars)
-    truncated = len(value) > limit
-    return {
-        "available": bool(value),
-        "text": value[-limit:] if truncated else value,
-        "truncated": truncated,
-    }
-
-
-def _bounded_file_tail(path: Path, max_chars: int) -> dict[str, Any]:
-    limit = max(1, max_chars)
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return {"available": False, "text": "", "truncated": False}
-    text = core._read_tail(path, limit)
-    return {
-        "available": bool(text),
-        "text": text,
-        "truncated": size > limit,
-    }
-
-
-def _raw_terminal_logs(run_dir: Path, max_chars: int) -> dict[str, Any]:
-    return {
-        "terminal_log_tail": _bounded_file_tail(run_dir / "terminal.log", max_chars),
-        "terminal_progress_tail": _bounded_file_tail(
-            run_dir / "terminal-progress.log",
-            max_chars,
-        ),
-        "stdout_tail": _bounded_file_tail(run_dir / "agy.stdout.log", max_chars),
-        "stderr_tail": _bounded_file_tail(run_dir / "agy.stderr.log", max_chars),
-    }
-
-
-def _latest_step_with_content(state: RunState) -> dict[str, Any] | None:
-    conversation_id = state.get("conversation_id")
-    if not conversation_id:
-        return None
-    latest = core.latest_step(conversation_id)
-    if not latest or not isinstance(latest.get("step_index"), int):
-        return latest
-    steps = core.compact_steps(
-        conversation_id,
-        after_step=latest["step_index"] - 1,
-        limit=1,
-        include_content=True,
-        max_content_chars=2000,
-    )
-    return steps[-1] if steps else latest
 
 
 def _run_age_seconds(state: RunState) -> float | None:
@@ -299,7 +199,7 @@ class RunnerOrchestrator:
 
     def result_artifact_path(self, run_id: str) -> Path:
         """Return the immutable final-result artifact path for a Run."""
-        return self.run_dir(run_id) / "final-result.txt"
+        return run_results.result_artifact_path(self.run_dir(run_id))
 
     def goal_dir(self, goal_id: str) -> Path:
         """Get the goal directory for the given goal_id.
@@ -600,13 +500,26 @@ class RunnerOrchestrator:
                 if terminal_status == "canceled"
                 else "runner exited before recording a terminal status"
             )
+            finished_at = core.utc_now()
             state = self.update_state(
                 run_id,
                 status=terminal_status,
                 error=terminal_error,
-                finished_at=core.utc_now(),
+                finished_at=finished_at,
                 only_if_active=True,
             )
+            if (
+                state["status"] == terminal_status
+                and state.get("finished_at") == finished_at
+            ):
+                session_events.append_event(
+                    self.run_dir(run_id),
+                    "run_canceled" if terminal_status == "canceled" else "run_failed",
+                    {
+                        "status": terminal_status,
+                        "error": terminal_error,
+                    },
+                )
             if state["status"] in {"failed", "canceled"} and (
                 self._reaper_can_kill_session(state)
             ):
@@ -789,7 +702,7 @@ class RunnerOrchestrator:
                     "event_key": snapshot["latest_event_key"],
                     "transcript_step": snapshot["latest_transcript_step"],
                 },
-                "terminal": _observe_terminal(
+                "terminal": terminal_evidence.observe_terminal(
                     run_dir,
                     state,
                     tail_available=bool(snapshot["terminal_tail_available"]),
@@ -824,43 +737,16 @@ class RunnerOrchestrator:
             load_state=self.load_state,
             prompt_capture_timeout_seconds=0.0,
         )
-        tmux_session = state.get("tmux_session")
-        session = tmux_session if isinstance(tmux_session, str) else None
-        tmux_alive = terminal.alive(session) if session else False
-        live_pane: dict[str, Any] = {
-            "available": False,
-            "source": "tmux_capture",
-            "text": "",
-            "truncated": False,
-        }
-        if session and tmux_alive:
-            try:
-                live_text = terminal.capture_pane(
-                    session,
-                    timeout_seconds=max(0.0, timeout_seconds),
-                )
-            except terminal.TmuxCommandError as error:
-                live_pane["error"] = {
-                    "reason": error.reason,
-                    "returncode": error.returncode,
-                    "stderr": error.stderr,
-                }
-            else:
-                live_pane.update(_bounded_text(live_text, max_chars))
-        return {
-            "run_id": run_id,
-            "status": state["status"],
-            "lifecycle_status": snapshot["lifecycle_status"],
-            "activity_state": snapshot["activity_state"],
-            "tmux_session": session,
-            "tmux_alive": tmux_alive,
-            "can_send_text": bool(snapshot["can_send_text"]) and tmux_alive,
-            "live_pane": live_pane,
-            "logs": _raw_terminal_logs(run_dir, max_chars),
-            "control": {
-                "send_with": "agy_run_input",
-            },
-        }
+        return terminal_evidence.terminal_snapshot(
+            run_id=run_id,
+            state=state,
+            run_dir=run_dir,
+            lifecycle_status=snapshot["lifecycle_status"],
+            activity_state=snapshot["activity_state"],
+            can_send_text=bool(snapshot["can_send_text"]),
+            max_chars=max_chars,
+            timeout_seconds=timeout_seconds,
+        )
 
     def result(self, run_id: str) -> dict[str, Any]:
         """Fetch final response and completion state.
@@ -873,7 +759,7 @@ class RunnerOrchestrator:
         """
         state = self.load_state(run_id)
         conversation_id = state.get("conversation_id")
-        result = self._result_metadata(state)
+        result = run_results.metadata(state, self.run_dir(run_id))
         return {
             "run_id": run_id,
             "status": state["status"],
@@ -890,32 +776,13 @@ class RunnerOrchestrator:
         max_bytes: int = 65_536,
     ) -> dict[str, Any]:
         """Read a bounded byte chunk from a Run's immutable final result."""
-        if offset_bytes < 0:
-            raise ValueError("offset_bytes must be non-negative")
-        if max_bytes < 1:
-            raise ValueError("max_bytes must be at least 1")
-        max_bytes = min(max_bytes, RESULT_READ_MAX_BYTES)
         state = self.load_state(run_id)
-        if state["status"] not in TERMINAL_STATUSES:
-            raise ValueError("result artifact is only available for terminal runs")
-        artifact_path = self._ensure_result_artifact(state)
-        if artifact_path is None or not artifact_path.is_file():
-            raise ValueError("result artifact is unavailable")
-        total_bytes = artifact_path.stat().st_size
-        with artifact_path.open("rb") as handle:
-            handle.seek(min(offset_bytes, total_bytes))
-            data = handle.read(max_bytes)
-        next_offset = offset_bytes + len(data)
-        complete = next_offset >= total_bytes
-        return {
-            "run_id": run_id,
-            "offset_bytes": offset_bytes,
-            "returned_bytes": len(data),
-            "total_bytes": total_bytes,
-            "next_offset_bytes": None if complete else next_offset,
-            "complete": complete,
-            "content": data.decode("utf-8", errors="replace"),
-        }
+        return run_results.read_chunk(
+            state,
+            self.run_dir(run_id),
+            offset_bytes=offset_bytes,
+            max_bytes=max_bytes,
+        )
 
     def wait(
         self,
@@ -942,34 +809,8 @@ class RunnerOrchestrator:
             timeout_seconds=timeout_seconds,
         )
 
-    def _ensure_result_artifact(self, state: RunState) -> Path | None:
-        run_id = state["run_id"]
-        path = self.result_artifact_path(run_id)
-        if state["status"] != "completed":
-            self._discard_result_artifact(run_id)
-            return None
-        if path.is_file():
-            return path
-        response = state.get("result")
-        conversation_id = state.get("conversation_id")
-        if response is None and conversation_id:
-            response = core.final_response(conversation_id)
-        response = core.clean_response(response, state.get("completion_marker"))
-        if response is None:
-            return None
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temporary.write_text(response, encoding="utf-8")
-            os.replace(temporary, path)
-        finally:
-            if temporary.exists():
-                temporary.unlink()
-        return path
-
     def _discard_result_artifact(self, run_id: str) -> None:
-        with suppress(OSError):
-            self.result_artifact_path(run_id).unlink()
+        run_results.discard_artifact(self.run_dir(run_id))
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         """Request cancel of an active run and kill execution session.
@@ -1254,7 +1095,7 @@ class RunnerOrchestrator:
                 "error": state.get("error"),
                 "session_label": state.get("session_label"),
                 "tmux_session": state.get("tmux_session"),
-                "result": self._result_metadata(state),
+                "result": run_results.metadata(state, self.run_dir(run_id)),
             }
         statuses = {item["status"] for item in targets.values()}
         if statuses and statuses <= {"completed"}:
@@ -1268,23 +1109,6 @@ class RunnerOrchestrator:
         else:
             aggregate = "pending"
         return {**goal, "status": aggregate, "targets": targets}
-
-    def _result_metadata(self, state: RunState) -> dict[str, Any] | None:
-        if state["status"] not in TERMINAL_STATUSES:
-            return None
-        artifact_path = self._ensure_result_artifact(state)
-        if not artifact_path or not artifact_path.is_file():
-            return None
-        total_bytes = artifact_path.stat().st_size
-        with artifact_path.open("rb") as handle:
-            preview_bytes = handle.read(RESULT_PREVIEW_BYTES)
-        return {
-            "preview": preview_bytes.decode("utf-8", errors="replace"),
-            "total_bytes": total_bytes,
-            "complete": total_bytes <= RESULT_PREVIEW_BYTES,
-            "artifact_path": str(artifact_path),
-            "read_with": "agy_run_result",
-        }
 
     def open_terminal(self, run_id: str) -> dict[str, Any]:
         """Open a visible macOS Terminal attached to the run's Tmux session.
@@ -1350,303 +1174,14 @@ class RunnerOrchestrator:
             ValueError: If the run is not foreground attachable.
         """
         state = self.load_state(run_id)
-        delivery_id = uuid.uuid4().hex
-        input_bytes = len(text.encode("utf-8"))
-        if (
-            state.get("execution_surface") != "foreground"
-            or not state.get("human_attachable")
-        ):
-            raise ValueError(
-                "text input is only supported for foreground attachable Runs"
-            )
-        if input_bytes > INPUT_MAX_BYTES:
-            return {
-                "run_id": run_id,
-                "tmux_session": state.get("tmux_session"),
-                "sent": False,
-                "delivery_id": delivery_id,
-                "delivery_state": "rejected",
-                "error_kind": "input_too_large",
-                "error": f"text exceeds {INPUT_MAX_BYTES} bytes",
-                "input_bytes": input_bytes,
-                "max_input_bytes": INPUT_MAX_BYTES,
-                "execution_mode": state.get("execution_mode", "print"),
-                "agent_mode": state.get("agent_mode", "task"),
-                "execution_surface": state.get("execution_surface", "headless"),
-                "human_attachable": state.get("human_attachable", False),
-            }
-        delivery = (
-            "foreground_mcp_submit"
-            if enter and bool(text)
-            else "foreground_mcp_keystrokes"
-        )
-        if state.get("status") not in ACTIVE_STATUSES:
-            return {
-                "run_id": run_id,
-                "tmux_session": state.get("tmux_session"),
-                "sent": False,
-                "delivery_id": delivery_id,
-                "delivery_state": "rejected",
-                "error_kind": "run_not_active",
-                "status": state.get("status"),
-                "error": "run is not active",
-                "execution_mode": state.get("execution_mode", "print"),
-                "agent_mode": state.get("agent_mode", "task"),
-                "execution_surface": state.get("execution_surface", "headless"),
-                "human_attachable": state.get("human_attachable", False),
-            }
-        stale = self._stale_input_precondition(
+        return run_input_delivery.deliver(
             state,
-            expected_event_key=expected_event_key,
-            expected_transcript_step=expected_transcript_step,
-        )
-        if stale is not None:
-            return {
-                "run_id": run_id,
-                "tmux_session": state.get("tmux_session"),
-                "sent": False,
-                "delivery_id": delivery_id,
-                "delivery_state": "rejected",
-                "error_kind": "stale_observation",
-                "error": stale["reason"],
-                "retry_with": "agy_run_observe",
-                "execution_mode": state.get("execution_mode", "print"),
-                "agent_mode": state.get("agent_mode", "task"),
-                "execution_surface": state.get("execution_surface", "headless"),
-                "human_attachable": state.get("human_attachable", False),
-                **stale,
-            }
-        session_events.append_event(
-            self.run_dir(run_id),
-            "mcp_input_submitted",
-            {
-                "category": "mcp_input",
-                "severity": "info",
-                "source": "mcp",
-                "observed": {
-                    "activity_state": "working",
-                    "delivery_id": delivery_id,
-                    "delivery_state": "submitted",
-                    "delivery": delivery,
-                    "enter": enter,
-                },
-            },
-        )
-        if not state.get("tmux_session"):
-            error = "run does not have an active tmux session"
-            self._record_send_text_failed(
-                state,
-                delivery_id=delivery_id,
-                delivery=delivery,
-                enter=enter,
-                error=error,
-                error_kind="tmux_unavailable",
-            )
-            return self._send_text_not_delivered(
-                state,
-                delivery_id=delivery_id,
-                error=error,
-                error_kind="tmux_unavailable",
-            )
-        session = self.get_session(state)
-        if not session.is_alive():
-            error = f"tmux session is not running: {state.get('tmux_session')}"
-            self._record_send_text_failed(
-                state,
-                delivery_id=delivery_id,
-                delivery=delivery,
-                enter=enter,
-                error=error,
-                error_kind="tmux_unavailable",
-            )
-            return self._send_text_not_delivered(
-                state,
-                delivery_id=delivery_id,
-                error=error,
-                error_kind="tmux_unavailable",
-            )
-        interactive_input.record_mcp_input(
             self.run_dir(run_id),
             text=text,
             enter=enter,
-            delivery=delivery,
-        )
-        try:
-            session.send_input(text, enter=enter)
-        except terminal.TmuxCommandError as error:
-            error_kind = self._tmux_error_kind(error)
-            self._record_send_text_failed(
-                state,
-                delivery_id=delivery_id,
-                delivery=delivery,
-                enter=enter,
-                error=str(error),
-                error_kind=error_kind,
-            )
-            return self._send_text_not_delivered(
-                state,
-                delivery_id=delivery_id,
-                error=str(error),
-                error_kind=error_kind,
-            )
-        except ValueError as error:
-            self._record_send_text_failed(
-                state,
-                delivery_id=delivery_id,
-                delivery=delivery,
-                enter=enter,
-                error=str(error),
-                error_kind="tmux_unavailable",
-            )
-            return self._send_text_not_delivered(
-                state,
-                delivery_id=delivery_id,
-                error=str(error),
-                error_kind="tmux_unavailable",
-            )
-        session_events.append_event(
-            self.run_dir(run_id),
-            "mcp_input_delivered",
-            {
-                "category": "mcp_input",
-                "severity": "info",
-                "source": "mcp",
-                "observed": {
-                    "activity_state": "working",
-                    "delivery_id": delivery_id,
-                    "delivery_state": "delivered",
-                    "delivery": delivery,
-                    "enter": enter,
-                },
-            },
-        )
-        return {
-            "run_id": run_id,
-            "tmux_session": state.get("tmux_session"),
-            "sent": True,
-            "delivery_id": delivery_id,
-            "delivery_state": "delivered",
-            "cleared_attention": True,
-            "enter": enter,
-            "execution_mode": state.get("execution_mode", "print"),
-            "agent_mode": state.get("agent_mode", "task"),
-            "execution_surface": state.get("execution_surface", "headless"),
-            "delivery": delivery,
-        }
-
-    def _stale_input_precondition(
-        self,
-        state: RunState,
-        *,
-        expected_event_key: str | None,
-        expected_transcript_step: int | None,
-    ) -> dict[str, Any] | None:
-        if expected_event_key is None and expected_transcript_step is None:
-            return None
-        snapshot = run_control_snapshot.RunControlSnapshot.from_run(
-            state["run_id"],
+            expected_event_key=expected_event_key,
+            expected_transcript_step=expected_transcript_step,
             state_root=self.state_root,
             load_state=self.load_state,
-            prompt_capture_timeout_seconds=0.0,
+            get_session=self.get_session,
         )
-        latest_event_key = snapshot["latest_event_key"]
-        latest_transcript_step = snapshot["latest_transcript_step"]
-        latest_step = _latest_step_with_content(state)
-        if (
-            expected_transcript_step is not None
-            and isinstance(latest_transcript_step, int)
-            and latest_transcript_step > expected_transcript_step
-        ):
-            return {
-                "reason": "transcript advanced after caller observed the run",
-                "expected_event_key": expected_event_key,
-                "latest_event_key": latest_event_key,
-                "expected_transcript_step": expected_transcript_step,
-                "latest_transcript_step": latest_transcript_step,
-                "latest_step": latest_step,
-                "snapshot": snapshot,
-            }
-        if (
-            expected_event_key is not None
-            and latest_event_key is not None
-            and latest_event_key != expected_event_key
-        ):
-            return {
-                "reason": "run event cursor advanced after caller observed the run",
-                "expected_event_key": expected_event_key,
-                "latest_event_key": latest_event_key,
-                "expected_transcript_step": expected_transcript_step,
-                "latest_transcript_step": latest_transcript_step,
-                "latest_step": latest_step,
-                "snapshot": snapshot,
-            }
-        return None
-
-    def _record_send_text_failed(
-        self,
-        state: RunState,
-        *,
-        delivery_id: str,
-        delivery: str,
-        enter: bool,
-        error: str,
-        error_kind: str,
-    ) -> None:
-        session_events.append_event(
-            self.run_dir(state["run_id"]),
-            "mcp_input_failed",
-            {
-                "category": "mcp_input",
-                "severity": "error",
-                "source": "mcp",
-                "observed": {
-                    "activity_state": "awaiting_mcp_input",
-                    "delivery_id": delivery_id,
-                    "delivery_state": "failed",
-                    "delivery": delivery,
-                    "enter": enter,
-                    "error_kind": error_kind,
-                    "error": error,
-                },
-            },
-        )
-
-    def _tmux_error_kind(self, error: terminal.TmuxCommandError) -> str:
-        if error.reason == "timeout":
-            return "tmux_timeout"
-        if error.reason == "eof":
-            return "tmux_eof"
-        return "tmux_failed"
-
-    def _send_text_not_delivered(
-        self,
-        state: RunState,
-        *,
-        delivery_id: str,
-        error: str,
-        error_kind: str,
-    ) -> dict[str, Any]:
-        conversation_id = state.get("conversation_id")
-        latest_step = core.latest_step(conversation_id) if conversation_id else None
-        snapshot = run_control_snapshot.RunControlSnapshot.from_run(
-            state["run_id"],
-            state_root=self.state_root,
-            load_state=self.load_state,
-        )
-        return {
-            "run_id": state["run_id"],
-            "tmux_session": state.get("tmux_session"),
-            "sent": False,
-            "delivery_id": delivery_id,
-            "delivery_state": "failed",
-            "error_kind": error_kind,
-            "status": state.get("status"),
-            "conversation_id": conversation_id,
-            "latest_step": latest_step,
-            "error": error,
-            "snapshot": snapshot,
-            "execution_mode": state.get("execution_mode", "print"),
-            "agent_mode": state.get("agent_mode", "task"),
-            "execution_surface": state.get("execution_surface", "headless"),
-            "human_attachable": state.get("human_attachable", False),
-        }

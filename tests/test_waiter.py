@@ -42,6 +42,31 @@ def test_wait_for_runs_returns_when_attention_event_arrives(tmp_path):
     assert result["runs"]["run-1"]["latest_event_id"] == "000000000002"
 
 
+def test_wait_for_runs_accepts_friendly_finished_alias(tmp_path):
+    state_root = tmp_path / "state"
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    core.atomic_write_json(
+        core.state_path("run-1", state_root=state_root),
+        {"run_id": "run-1", "status": "completed"},
+    )
+    completed = session_events.append_event(
+        run_dir,
+        "run_completed",
+        {"status": "completed"},
+    )
+
+    result = wait_for_runs(
+        {"run-1": run_dir},
+        state_root=state_root,
+        condition="finished",
+        timeout_seconds=0,
+    )
+
+    assert result["matched"] is True
+    assert result["condition"] == "any_terminal"
+    assert result["events"] == [completed]
+
+
 def test_wait_for_runs_timeout_ignores_ordinary_events_for_attention(tmp_path):
     state_root = tmp_path / "state"
     run_dir = core.run_dir("run-1", state_root=state_root)

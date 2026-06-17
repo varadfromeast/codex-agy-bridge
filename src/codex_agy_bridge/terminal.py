@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -11,6 +12,17 @@ from contextlib import suppress
 from pathlib import Path
 
 DEFAULT_TMUX_TIMEOUT_SECONDS = 2.0
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+OSC_ESCAPE_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_text(text: str) -> str:
+    """Return terminal text without ANSI/control sequences."""
+    text = OSC_ESCAPE_RE.sub("", text)
+    text = ANSI_ESCAPE_RE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return CONTROL_RE.sub("", text)
 
 
 class TmuxCommandError(RuntimeError):
