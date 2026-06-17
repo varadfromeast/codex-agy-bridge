@@ -330,6 +330,32 @@ def test_supervisor_treats_stable_done_response_as_completed_without_marker(
     assert supervisor._completion_is_stable("final response")
 
 
+def test_supervisor_completes_when_feedback_prompt_advances_transcript(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+    }
+    clock = FakeClock(100.0)
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr("codex_agy_bridge.supervision.time.monotonic", clock)
+    supervisor = RunSupervisor("run-1")
+    supervisor.completion_idle_seconds = 2.0
+    supervisor.latest_response_step_index = 4
+    supervisor.latest_transcript_step_index = 5
+    supervisor.done_response_step_index = 4
+    supervisor.done_response_seen_at = clock()
+
+    clock.advance(2.1)
+
+    assert supervisor._completion_is_stable("final response")
+
+
 def test_interactive_supervisor_does_not_finish_on_completion_marker(
     monkeypatch, tmp_path
 ):

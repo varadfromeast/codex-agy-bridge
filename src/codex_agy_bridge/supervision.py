@@ -362,7 +362,6 @@ class RunSupervisor:
             not response
             or self.done_response_step_index is None
             or self.done_response_seen_at is None
-            or self.latest_transcript_step_index != self.done_response_step_index
         ):
             return False
         return time.monotonic() - self.done_response_seen_at >= (
