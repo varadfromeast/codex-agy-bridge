@@ -32,7 +32,7 @@ when the CLI changes.
 
 - Starts long-running Antigravity work asynchronously.
 - Persists run state and logs across MCP server restarts.
-- Emits sparse durable run events and exposes `agy_wait` to avoid repeated
+- Emits sparse durable run events and exposes `agy_run_wait` to avoid repeated
   status polling.
 - Returns bounded, sanitized transcript events without private model reasoning.
 - Opens each run in a persistent `tmux` session.
@@ -364,13 +364,14 @@ Run state survives MCP server restarts under:
 ```
 
 `session-events.jsonl` stores sparse durable lifecycle events, and `notify.seq`
-stores the latest event id so `agy_wait` can wait on tiny marker files instead
-of repeatedly parsing transcripts. Old terminal run directories are swept by the
-janitor, preserving only durable state.
+stores the latest event id so `agy_run_wait` can wait on tiny marker files
+instead of repeatedly parsing transcripts. Old terminal run directories are
+swept by the janitor, preserving only durable state.
 
-`agy_status(compact=false)` returns diagnostic paths.
-`agy_transcript` returns bounded events by default; full event content is
-opt-in and length-capped. Private model reasoning fields are never exposed.
+`agy_run_observe(view="status", compact=false)` returns diagnostic paths.
+`agy_run_observe(view="transcript")` returns bounded events by default; full
+event content is opt-in and length-capped. Private model reasoning fields are
+never exposed.
 
 ## Execution Risk
 
@@ -389,8 +390,8 @@ scopes conversation context only.
 Interactive Runs are experimental and should be used sparingly. The bridge
 queues submitted prompts and releases one after observing a completed planner
 response in Antigravity's transcript. If those private transcript event
-semantics change, delivery may stall. `agy_status` exposes the queue depth and
-delivery state.
+semantics change, delivery may stall. `agy_run_observe(view="status")` exposes
+the queue depth and delivery state.
 
 Goals are an MCP scheduler implemented by this bridge. They are not an
 Antigravity feature, and separate targets do not share native conversation

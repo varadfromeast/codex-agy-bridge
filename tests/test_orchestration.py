@@ -148,7 +148,7 @@ def test_create_run_returns_notification_metadata(monkeypatch, tmp_path):
     assert state["notification_resource_uri"] == (
         f"agy-run://{state['run_id']}/notifications"
     )
-    assert state["wait_tool"] == "agy_wait"
+    assert state["wait_tool"] == "agy_run_wait"
 
 
 @pytest.mark.parametrize(
@@ -628,6 +628,33 @@ def test_canceled_result_does_not_synthesize_artifact_from_transcript(tmp_path):
     assert not (tmp_path / "runs" / "run" / "final-result.txt").exists()
 
 
+def test_failed_result_discards_stale_artifact(tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "failed",
+            "conversation_id": "conversation-1",
+            "result": "partial planner response",
+            "completion_marker": "DONE_MARKER",
+            "error": "hard timeout exceeded",
+        },
+    )
+    run_dir = tmp_path / "runs" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final-result.txt").write_text("stale partial", encoding="utf-8")
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    result = orchestrator.result("run")
+
+    assert result["result"] is None
+    assert result["error"] == "hard timeout exceeded"
+    assert not (run_dir / "final-result.txt").exists()
+    with pytest.raises(ValueError, match="result artifact is unavailable"):
+        orchestrator.result_read("run")
+
+
 def test_foreground_task_run_accepts_text_injection(monkeypatch, tmp_path):
     sent = []
     state_root = isolate_state_root(monkeypatch, tmp_path)
@@ -855,7 +882,7 @@ def test_send_text_rejects_stale_transcript_precondition(monkeypatch, tmp_path):
     assert result["latest_step"]["content"] == (
         "new answer that should change Codex's decision"
     )
-    assert result["retry_with"] == "agy_observe"
+    assert result["retry_with"] == "agy_run_observe"
 
 
 def test_open_terminal_rejects_stopped_tmux_session(monkeypatch, tmp_path):

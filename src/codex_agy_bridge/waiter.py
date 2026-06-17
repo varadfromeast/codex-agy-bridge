@@ -55,21 +55,24 @@ def wait_for_runs(
     )
 
     while True:
+        _observe_current_prompts(detectors)
         events = _matching_events(run_dirs, condition=condition, after=after)
         runs = _compact_runs(
             run_dirs,
             state_root=state_root,
             load_state=load_state,
             prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
+            detect_prompts=False,
         )
         if condition == "any_attention":
-            attention_events = _ensure_attention_events(run_dirs, runs)
+            attention_events = _ensure_attention_events(run_dirs, runs, after=after)
             if attention_events:
                 runs = _compact_runs(
                     run_dirs,
                     state_root=state_root,
                     load_state=load_state,
                     prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
+                    detect_prompts=False,
                 )
                 return _result(
                     condition,
@@ -77,7 +80,6 @@ def wait_for_runs(
                     _merge_events(events, attention_events),
                     runs,
                 )
-        _observe_current_prompts(detectors)
         matched = bool(events)
         if condition == "all_terminal":
             matched = bool(runs) and all(
@@ -188,6 +190,7 @@ def _compact_runs(
     state_root: Path | None,
     load_state: Callable[[str], RunState] | None,
     prompt_capture_timeout_seconds: float,
+    detect_prompts: bool = True,
 ) -> dict[str, dict[str, Any]]:
     runs: dict[str, dict[str, Any]] = {}
     for run_id, run_dir in run_dirs.items():
@@ -206,6 +209,7 @@ def _compact_runs(
                 state_root=state_root,
                 load_state=load_state,
                 prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
+                detect_prompts=detect_prompts,
             )
         except Exception as error_value:
             status = "failed"
@@ -248,6 +252,8 @@ def _compact_runs(
 def _ensure_attention_events(
     run_dirs: dict[str, Path],
     runs: dict[str, dict[str, Any]],
+    *,
+    after: dict[str, str],
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for run_id, run in runs.items():
@@ -257,7 +263,12 @@ def _ensure_attention_events(
         run_dir = run_dirs[run_id]
         existing = _active_needs_attention_event(run_dir)
         if existing is not None:
-            events.append(existing)
+            if existing in session_events.read_events(
+                run_dir,
+                after_event_id=after.get(run_id),
+                limit=10_000,
+            ):
+                events.append(existing)
             continue
         prompt = attention.get("prompt")
         suggested_inputs = attention.get("suggested_inputs")

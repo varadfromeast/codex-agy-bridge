@@ -156,10 +156,12 @@ def latest_event_id(run_dir: Path) -> str | None:
 
 def latest_event_key(run_dir: Path) -> str | None:
     """Return the latest globally keyable event id for a run."""
-    for event in reversed(read_events(run_dir, limit=10_000)):
+    for event in reversed(read_events(run_dir, limit=None)):
         event_id = event.get("event_id")
         if isinstance(event_id, str) and event_id:
             return event_id if ":" in event_id else f"{run_dir.name}:{event_id}"
+        if isinstance(event_id, int) and event_id >= 0:
+            return f"{run_dir.name}:{event_id}"
     latest = latest_event_id(run_dir)
     return f"{run_dir.name}:{latest}" if latest else None
 
@@ -168,10 +170,10 @@ def read_events(
     run_dir: Path,
     *,
     after_event_id: str | None = None,
-    limit: int = 100,
+    limit: int | None = 100,
 ) -> list[SessionEvent]:
     """Read durable events newer than ``after_event_id``."""
-    if limit < 1:
+    if limit is not None and limit < 1:
         return []
     after_run_seq = _cursor_to_run_seq(after_event_id)
     path = run_dir / EVENTS_FILE
@@ -195,7 +197,7 @@ def read_events(
         if after_run_seq is not None and run_seq <= after_run_seq:
             continue
         events.append(value)
-        if len(events) >= limit:
+        if limit is not None and len(events) >= limit:
             break
     return events
 
@@ -203,33 +205,39 @@ def read_events(
 def _next_run_seq(run_dir: Path) -> str:
     latest = latest_event_id(run_dir)
     latest_seq = _cursor_to_run_seq(latest)
-    if latest_seq is not None and latest_seq.isdecimal():
-        return f"{int(latest_seq) + 1:012d}"
+    if latest_seq is not None:
+        return f"{latest_seq + 1:012d}"
     latest_seen = 0
-    for event in read_events(run_dir, limit=10_000):
+    for event in read_events(run_dir, limit=None):
         run_seq = _event_run_seq(event)
-        if run_seq is not None and run_seq.isdecimal():
-            latest_seen = max(latest_seen, int(run_seq))
+        if run_seq is not None:
+            latest_seen = max(latest_seen, run_seq)
     return f"{latest_seen + 1:012d}"
 
 
-def _cursor_to_run_seq(cursor: str | None) -> str | None:
+def _cursor_to_run_seq(cursor: object) -> int | None:
     if cursor is None:
         return None
-    if cursor.isdecimal():
+    if isinstance(cursor, int) and cursor >= 0:
         return cursor
+    if not isinstance(cursor, str):
+        return None
+    if cursor.isdecimal():
+        return int(cursor)
     _, separator, run_seq = cursor.rpartition(":")
     if separator and run_seq.isdecimal():
-        return run_seq
-    return cursor
+        return int(run_seq)
+    return None
 
 
-def _event_run_seq(event: dict[str, Any]) -> str | None:
+def _event_run_seq(event: dict[str, Any]) -> int | None:
     run_seq = event.get("run_seq")
-    if isinstance(run_seq, str):
+    if isinstance(run_seq, int) and run_seq >= 0:
         return run_seq
+    if isinstance(run_seq, str) and run_seq.isdecimal():
+        return int(run_seq)
     event_id = event.get("event_id")
-    if isinstance(event_id, str):
+    if isinstance(event_id, str | int):
         return _cursor_to_run_seq(event_id)
     return None
 

@@ -61,6 +61,30 @@ def test_read_events_accepts_event_id_cursor(tmp_path):
     ) == [second]
 
 
+def test_read_events_compares_legacy_numeric_cursors_numerically(tmp_path):
+    run_dir = tmp_path / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    lines = [
+        '{"event_id":"2","run_id":"run-1","kind":"run_started"}',
+        '{"event_id":"10","run_id":"run-1","kind":"run_completed"}',
+        '{"event_id":11,"run_id":"run-1","kind":"run_failed"}',
+    ]
+    (run_dir / "session-events.jsonl").write_text("\n".join(lines), encoding="utf-8")
+
+    events = session_events.read_events(run_dir, after_event_id="run-1:3")
+
+    assert [event["event_id"] for event in events] == ["10", 11]
+
+
+def test_read_events_ignores_malformed_cursor_instead_of_filtering_all(tmp_path):
+    run_dir = tmp_path / "runs" / "run-1"
+    event = session_events.append_event(run_dir, "run_started")
+
+    assert session_events.read_events(run_dir, after_event_id="run-1:not-a-seq") == [
+        event
+    ]
+
+
 def test_latest_event_key_prefixes_legacy_numeric_event_id(tmp_path):
     run_dir = tmp_path / "runs" / "run-1"
     run_dir.mkdir(parents=True)
@@ -71,6 +95,32 @@ def test_latest_event_key_prefixes_legacy_numeric_event_id(tmp_path):
     (run_dir / "notify.seq").write_text("000000000001\n", encoding="utf-8")
 
     assert session_events.latest_event_key(run_dir) == "run-1:000000000001"
+
+
+def test_latest_event_key_prefixes_legacy_integer_event_id(tmp_path):
+    run_dir = tmp_path / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "session-events.jsonl").write_text(
+        '{"event_id":1,"run_id":"run-1","kind":"run_started"}\n',
+        encoding="utf-8",
+    )
+
+    assert session_events.latest_event_key(run_dir) == "run-1:1"
+
+
+def test_latest_event_key_scans_past_default_read_limit(tmp_path):
+    run_dir = tmp_path / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    lines = [
+        (
+            f'{{"event_id":"{index}","run_id":"run-1",'
+            f'"kind":"terminal_output_observed"}}'
+        )
+        for index in range(1, 102)
+    ]
+    (run_dir / "session-events.jsonl").write_text("\n".join(lines), encoding="utf-8")
+
+    assert session_events.latest_event_key(run_dir) == "run-1:101"
 
 
 def test_append_event_defaults_contract_fields_for_lifecycle_events(tmp_path):

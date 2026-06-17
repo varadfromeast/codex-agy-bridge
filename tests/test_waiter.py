@@ -159,6 +159,32 @@ def test_wait_for_runs_persists_current_snapshot_attention(tmp_path):
     assert session_events.read_events(run_dir)[-1]["kind"] == "needs_attention"
 
 
+def test_wait_for_runs_does_not_rewake_on_active_attention_at_after_cursor(tmp_path):
+    state_root = tmp_path / "state"
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    core.atomic_write_json(
+        core.state_path("run-1", state_root=state_root),
+        {"run_id": "run-1", "status": "running"},
+    )
+    attention = session_events.append_event(
+        run_dir,
+        "needs_attention",
+        {"observed": {"prompt": "Continue?"}},
+    )
+
+    result = wait_for_runs(
+        {"run-1": run_dir},
+        state_root=state_root,
+        condition="any_attention",
+        after={"run-1": attention["event_id"]},
+        timeout_seconds=0,
+    )
+
+    assert result["matched"] is False
+    assert result["events"] == []
+    assert result["runs"]["run-1"]["attention"]["required"] is True
+
+
 def test_wait_for_runs_all_terminal_matches_when_every_run_is_terminal(tmp_path):
     state_root = tmp_path / "state"
     run_1 = core.run_dir("run-1", state_root=state_root)

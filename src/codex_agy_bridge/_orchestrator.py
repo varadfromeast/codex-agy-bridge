@@ -664,7 +664,7 @@ class RunnerOrchestrator:
                 "latest_transcript_step": snapshot["latest_transcript_step"],
                 "terminal_tail_available": snapshot["terminal_tail_available"],
                 "notification_resource_uri": state.get("notification_resource_uri"),
-                "wait_tool": state.get("wait_tool", "agy_wait"),
+                "wait_tool": state.get("wait_tool", "agy_run_wait"),
                 "latest_step": latest,
                 "provider_health": core.run_provider_health(self.run_dir(run_id)),
                 "interactive_queue": interactive_queue,
@@ -935,13 +935,11 @@ class RunnerOrchestrator:
     def _ensure_result_artifact(self, state: RunState) -> Path | None:
         run_id = state["run_id"]
         path = self.result_artifact_path(run_id)
-        if state["status"] == "canceled":
+        if state["status"] != "completed":
             self._discard_result_artifact(run_id)
             return None
         if path.is_file():
             return path
-        if state["status"] != "completed":
-            return None
         response = state.get("result")
         conversation_id = state.get("conversation_id")
         if response is None and conversation_id:
@@ -1338,7 +1336,7 @@ class RunnerOrchestrator:
                 "delivery_state": "rejected",
                 "error_kind": "stale_observation",
                 "error": stale["reason"],
-                "retry_with": "agy_observe",
+                "retry_with": "agy_run_observe",
                 "execution_mode": state.get("execution_mode", "print"),
                 "agent_mode": state.get("agent_mode", "task"),
                 "execution_surface": state.get("execution_surface", "headless"),

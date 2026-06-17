@@ -60,7 +60,7 @@ class RunJanitor:
         active_dir = self.state_root / "active"
         if active_dir.exists():
             for path in list(active_dir.iterdir()):
-                if not path.is_file():
+                if path.name.startswith(".") or not path.is_file():
                     continue
                 run_id = path.name
                 try:

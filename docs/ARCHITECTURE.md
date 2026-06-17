@@ -86,7 +86,7 @@ sequenceDiagram
     participant T as tmux
     participant A as Antigravity
 
-    C->>O: agy_run_input(text, expected_event_key, expected_transcript_step)
+    C->>O: agy_run_input(run_id, text, expected_event_key, expected_transcript_step)
     O->>E: read latest event key and transcript step
     alt cursor is stale
         O-->>C: rejected with latest step/status
@@ -117,7 +117,7 @@ sequenceDiagram
     H-->>S: latest transcript step N
     S->>S: no newer step for AGY_BRIDGE_TRANSCRIPT_IDLE_SECONDS
     S->>E: append progress_stalled for step N
-    C->>E: agy_run_wait(any_attention)
+    C->>E: agy_run_wait(run_ids, condition="any_attention")
     E-->>C: progress_stalled warning
     C->>C: inspect transcript and terminal before acting
 ```

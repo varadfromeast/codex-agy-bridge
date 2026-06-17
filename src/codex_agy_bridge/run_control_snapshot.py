@@ -33,6 +33,7 @@ class RunControlSnapshot(dict[str, Any]):
         state_root: Path | None = None,
         load_state: Callable[[str], RunState] | None = None,
         prompt_capture_timeout_seconds: float = terminal.DEFAULT_TMUX_TIMEOUT_SECONDS,
+        detect_prompts: bool = True,
     ) -> RunControlSnapshot:
         state = (
             load_state(run_id)
@@ -53,6 +54,7 @@ class RunControlSnapshot(dict[str, Any]):
         latest_kind = latest_event.get("kind") if latest_event else None
         if (
             not attention.get("required")
+            and detect_prompts
             and state["status"] in ACTIVE_STATUSES
             and latest_kind not in ATTENTION_SUPPRESSING_EVENTS
         ):

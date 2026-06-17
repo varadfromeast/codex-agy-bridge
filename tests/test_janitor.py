@@ -67,6 +67,21 @@ def test_janitor_cleans_up_orphans(tmp_path, monkeypatch):
     assert final_state["status"] == "failed"
     assert "process died" in final_state["error"]
 
+
+def test_janitor_ignores_active_registry_temp_files(tmp_path):
+    state_root = tmp_path / "state"
+    pm = MockProcessManager()
+    orch = RunnerOrchestrator(state_root=state_root, process_manager=pm)
+    active_dir = state_root / "active"
+    active_dir.mkdir(parents=True)
+    temporary = active_dir / ".run-1.state.tmp"
+    temporary.write_text("partial", encoding="utf-8")
+
+    orch.run_janitor()
+
+    assert temporary.exists()
+
+
 def test_janitor_stops_tmux_session_when_supervisor_is_dead(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

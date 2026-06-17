@@ -48,9 +48,9 @@ Use these separate concepts:
 
 `RunControlSnapshot` is the projection module for this combined view. It reads
 durable state, sparse Run events, transcript position, interactive input queue
-state, and terminal/log hints. `agy_status`, `agy_goal_status`, `agy_wait`, and
-`agy_observe` should use this projection rather than each inventing its own
-interpretation of Run state.
+state, and terminal/log hints. `agy_run_observe`,
+`agy_goal(action="status")`, `agy_run_wait`, and `agy_run_input` should use
+this projection rather than each inventing its own interpretation of Run state.
 
 ## Run Events
 
@@ -91,7 +91,7 @@ Do you want to proceed?
 ```
 
 Prompt detection must treat that menu as active, while rejecting stale prompts
-followed by normal later output. `agy_wait` must not let live pane capture
+followed by normal later output. `agy_run_wait` must not let live pane capture
 consume the whole wait budget; it should use a small per-run capture budget and
 return `matched=false` on timeout.
 
@@ -146,19 +146,21 @@ Only completed Runs should synthesize or expose final result artifacts.
 ## Current Stabilization Focus
 
 Recent live MCP stress testing found that permission prompts can be invisible to
-`agy_wait` and `agy_goal_status`, especially file-access prompts. The current
-mitigation is twofold: force dangerous permission-skip on every Run Request and
-improve prompt detection for the visible approval menu shape. Keep the TODO live
-defect open until a fresh MCP live run verifies file-access prompts no longer
-wedge sessions.
+`agy_run_wait` and `agy_goal(action="status")`, especially file-access prompts.
+The current mitigation is twofold: force dangerous permission-skip on every Run
+Request and improve prompt detection for the visible approval menu shape. Keep
+the TODO live defect open until a fresh MCP live run verifies file-access
+prompts no longer wedge sessions.
 
 Before calling the bridge production-stable, run another live stress pass that
 specifically checks:
 
-- `agy_wait(condition="any_attention")` returns promptly for approval prompts,
-- `agy_goal_status` shows `activity_state="awaiting_user"` when attention is
-  required,
-- `agy_observe` can reveal terminal/transcript state after a suspicious timeout,
-- `agy_target_send_text` never hangs and returns structured delivery state,
+- `agy_run_wait(condition="any_attention")` returns promptly for approval
+  prompts,
+- `agy_goal(action="status")` shows `activity_state="awaiting_user"` when
+  attention is required,
+- `agy_run_observe` can reveal terminal/transcript state after a suspicious
+  timeout,
+- `agy_run_input` never hangs and returns structured delivery state,
 - dangerous permission-skip is persisted as `true` even when callers pass
   `false`.

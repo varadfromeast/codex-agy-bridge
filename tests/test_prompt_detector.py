@@ -51,6 +51,40 @@ def test_detector_dedupes_same_stable_prompt(tmp_path):
     assert detector.inspect(transcript_records=records) is None
 
 
+def test_detector_keeps_stability_when_only_surrounding_text_changes(tmp_path):
+    clock = FakeClock()
+    detector = PromptDetector(tmp_path, clock=clock)
+
+    assert (
+        detector.inspect(transcript_records=[{"content": "spinner\nContinue?"}])
+        is None
+    )
+    clock.advance(0.6)
+    event = detector.inspect(
+        transcript_records=[{"content": "spinner repaint\nContinue?"}]
+    )
+
+    assert event is not None
+    assert event.kind == "needs_attention"
+    assert event.attention["prompt"] == "Continue?"
+
+
+def test_detector_clears_old_attention_before_new_prompt(tmp_path):
+    clock = FakeClock()
+    detector = PromptDetector(tmp_path, clock=clock)
+    first = [{"content": "Continue?"}]
+    second = [{"content": "Proceed? [y/N]"}]
+
+    detector.inspect(transcript_records=first)
+    clock.advance(1.0)
+    assert detector.inspect(transcript_records=first).kind == "needs_attention"
+
+    event = detector.inspect(transcript_records=second)
+
+    assert event is not None
+    assert event.kind == "attention_cleared"
+
+
 def test_detector_prefers_transcript_over_terminal_and_capture(tmp_path, monkeypatch):
     clock = FakeClock()
     (tmp_path / "terminal.log").write_text("Continue?", encoding="utf-8")

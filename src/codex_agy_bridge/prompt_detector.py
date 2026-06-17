@@ -112,7 +112,25 @@ class PromptDetector:
             return None
 
         now = self.clock()
-        if candidate != self._candidate:
+        if (
+            self._candidate is not None
+            and candidate.dedupe_key != self._candidate.dedupe_key
+        ):
+            self._candidate = candidate
+            self._candidate_seen_at = now
+            if self._active_dedupe_key is not None:
+                dedupe_key = f"attention_cleared:{self._active_dedupe_key}"
+                self._active_dedupe_key = None
+                self._last_emitted_dedupe_key = None
+                return PromptDetectionEvent(
+                    kind="attention_cleared",
+                    source="bridge",
+                    activity_state="working",
+                    attention=None,
+                    dedupe_key=dedupe_key,
+                )
+            return None
+        if self._candidate is None:
             self._candidate = candidate
             self._candidate_seen_at = now
             return None
