@@ -159,6 +159,7 @@ class RunRequest:
         session_label: str,
         tmux_session: str,
         completion_marker: str,
+        artifact_dir: str | None = None,
     ) -> RunState:
         marker = completion_marker if self.agent_mode == "task" else ""
         effective_prompt = self.prompt.rstrip()
@@ -166,6 +167,7 @@ class RunRequest:
             effective_prompt = format_task_packet(
                 effective_prompt,
                 completion_marker=marker,
+                artifact_dir=artifact_dir,
             )
         return {
             "run_id": run_id,
@@ -173,6 +175,7 @@ class RunRequest:
             "created_at": now,
             "updated_at": now,
             "workspace": str(self.workspace),
+            "artifact_dir": artifact_dir or "",
             "prompt": effective_prompt,
             "prompt_preview": self.prompt[:240],
             "completion_marker": marker,

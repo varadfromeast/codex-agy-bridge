@@ -26,6 +26,7 @@ class RunState(TypedDict, total=False):
     created_at: str
     updated_at: str
     workspace: str
+    artifact_dir: str
     prompt: str
     prompt_preview: str
     completion_marker: str
