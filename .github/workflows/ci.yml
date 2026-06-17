@@ -22,6 +22,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev
+      - name: Prepare fake agy for unit tests
+        run: |
+          cat > "$RUNNER_TEMP/agy" <<'SH'
+          #!/bin/sh
+          if [ "$1" = "--help" ]; then
+            printf '%s\n' "--sandbox" "--add-dir" "--prompt-interactive"
+            exit 0
+          fi
+          exit 0
+          SH
+          chmod +x "$RUNNER_TEMP/agy"
+          echo "AGY_CMD=$RUNNER_TEMP/agy" >> "$GITHUB_ENV"
       - run: uv run ruff check .
       - run: uv run pytest
       - run: uv build
