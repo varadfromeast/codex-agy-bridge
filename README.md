@@ -3,16 +3,51 @@
 [![CI](https://github.com/varadfromeast/codex-agy-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/varadfromeast/codex-agy-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An observable, resumable MCP bridge that lets Codex delegate work to the
-official Antigravity CLI (`agy`) using the user's existing Antigravity login.
+Run Antigravity like a durable Codex workbench: parallel `agy` sessions,
+human-operable terminals, resumable results, and goal-level orchestration over
+MCP.
 
 <!-- mcp-name: io.github.varadfromeast/codex-agy-bridge -->
 
-`agy --print` is a blocking command. Agent work can outlive an MCP tool timeout,
-and its useful progress normally exists only in local Antigravity trajectory
-files. This bridge starts a detached worker, returns a durable `run_id`
-immediately, and exposes status, transcript, result, cancellation, continuation,
-wait, and bounded parallel-goal tools over MCP.
+`codex-agy-bridge` turns the official Antigravity CLI into an observable,
+resumable swarm of local agents. Codex can start many independent `agy` runs,
+watch them without polling spam, attach a real terminal when a human needs to
+steer, send guarded input, cancel safely, continue exact conversations, and
+collect final results after the original MCP call is long gone.
+
+The point is simple: `agy --print` is powerful, but it is blocking. Real agent
+work can outlive an MCP tool timeout, and its useful progress normally lives
+inside local Antigravity trajectory files. This bridge puts a durable control
+plane around that work. Every run gets a `run_id`; every run has persisted
+state, transcript projection, terminal logs, sparse wake events, and a final
+result artifact. Goals let Codex fan out named targets with bounded
+parallelism, then inspect the whole batch as one coordinated effort.
+
+This is especially useful when you want Codex to be the conductor and
+Antigravity to be the parallel execution crew: one target reviewing tests,
+another tracing a bug, another drafting a patch, all still visible and
+recoverable from your machine.
+
+## What Makes It Different
+
+- **Parallel Antigravity sessions:** start multiple independent `agy` runs from
+  one Codex conversation, each with its own durable state and logs.
+- **Human-operable runs:** every foreground task lives in a persistent `tmux`
+  session that Terminal.app can attach to without killing the run.
+- **Resumable MCP control:** MCP calls can time out, Codex can restart, and the
+  run can still be observed later by `run_id`.
+- **Goal orchestration:** create a goal, launch named targets under bounded
+  parallelism, and read aggregate target status/results as a single unit.
+- **Sparse wake events:** `agy_run_wait` blocks on lifecycle, attention,
+  progress, and terminal events instead of forcing Codex to poll transcripts.
+- **Safe input handoff:** send text only to active foreground runs, with
+  optional event/transcript preconditions to avoid stale human or model input.
+- **Trajectory-aware observability:** exposes bounded, sanitized transcript
+  summaries and terminal evidence while keeping private model reasoning out.
+- **Exact conversation continuation:** continue a known Antigravity
+  `conversation_id` without guessing from workspace state.
+- **Operational hygiene:** deduplicates identical active starts, enforces global
+  concurrency limits, cancels process groups, and preserves final artifacts.
 
 ## Quick Install
 
@@ -73,23 +108,31 @@ when the CLI changes.
 
 ## Features
 
-- Starts long-running Antigravity work asynchronously.
-- Persists run state and logs across MCP server restarts.
-- Emits sparse durable run events and exposes `agy_run_wait` to avoid repeated
-  status polling.
-- Returns bounded, sanitized transcript events without private model reasoning.
-- Opens each run in a persistent `tmux` session.
-- Continues an exact Antigravity `conversation_id`.
-- Cancels active process groups.
-- Groups named targets with bounded parallelism.
-- Deduplicates identical active start requests.
-- Keeps separate client-owned MCP server processes from terminating each other.
-- Detects authentication, rate-limit, quota, and response-timeout conditions.
-- Forwards CLI `--sandbox` and up to 16 `--add-dir` policy hints without
-  claiming filesystem containment.
-- Discovers models, plugins, capabilities, changelog, and bridge diagnostics.
-- Starts foreground task sessions in tmux and experimental persistent
-  `--prompt-interactive` sessions for occasional conversational input.
+- Start long-running Antigravity work asynchronously and get a durable `run_id`
+  immediately.
+- Run multiple `agy` sessions in parallel without losing track of which result
+  belongs to which target.
+- Attach Terminal.app to a live foreground run, inspect the session, and steer
+  it when automation needs a human hand.
+- Persist run state, terminal logs, event streams, and final result artifacts
+  across MCP server restarts.
+- Wait on sparse durable events with `agy_run_wait` instead of burning context
+  on repeated status polling.
+- Read bounded, sanitized transcript projections without exposing private model
+  reasoning.
+- Continue an exact Antigravity `conversation_id` when continuity matters.
+- Cancel active process groups and clean up terminal sessions without throwing
+  away completed results.
+- Create goals, start named targets, enforce bounded parallelism, and aggregate
+  results for multi-agent work.
+- Deduplicate identical active start requests so retries do not accidentally
+  launch duplicate agents.
+- Keep separate client-owned MCP server processes from terminating each other.
+- Detect authentication, rate-limit, quota, and response-timeout conditions.
+- Discover installed models, plugins, CLI capabilities, changelog entries, and
+  bridge diagnostics.
+- Forward CLI `--sandbox` and up to 16 `--add-dir` policy hints without
+  pretending they are filesystem containment.
 
 ## Install Details
 
