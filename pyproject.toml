@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "codex-agy-bridge"
 version = "0.1.4"
-description = "Run parallel, resumable, human-operable Antigravity CLI sessions from Codex over MCP"
+description = "Run parallel, resumable, human-operable Antigravity CLI sessions from any MCP agent harness"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.varadfromeast/codex-agy-bridge",
-  "title": "Codex Antigravity Bridge",
-  "description": "Run parallel, resumable, human-operable Antigravity CLI sessions from Codex over MCP",
+  "title": "Antigravity Agent Bridge",
+  "description": "Run parallel, resumable, human-operable Antigravity CLI sessions from any MCP agent harness",
   "repository": {
     "url": "https://github.com/varadfromeast/codex-agy-bridge",
     "source": "github"
