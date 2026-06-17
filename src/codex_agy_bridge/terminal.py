@@ -139,11 +139,12 @@ def launch(
 
 
 def attach(session: str, *, check: bool = False) -> None:
-    script = f"tmux attach-session -t {session}"
+    script = f"tmux attach-session -t {shlex.quote(session)}"
+    applescript_command = script.replace("\\", "\\\\").replace('"', '\\"')
     command = [
         "osascript",
         "-e",
-        f'tell application "Terminal" to do script "{script}"',
+        f'tell application "Terminal" to do script "{applescript_command}"',
         "-e",
         'tell application "Terminal" to activate',
     ]
@@ -184,8 +185,9 @@ def alive(session: str) -> bool:
 
 def stop(session: str) -> None:
     pane_pid = _pane_pid(session)
-    descendants = _descendant_pids(pane_pid) if pane_pid is not None else []
-    _signal_processes(descendants, signal.SIGTERM)
+    captured_tree = _descendant_parent_map(pane_pid) if pane_pid is not None else {}
+    descendants = list(captured_tree)
+    _signal_processes(descendants, signal.SIGTERM, captured_tree=captured_tree)
     with suppress(subprocess.TimeoutExpired, EOFError):
         subprocess.run(
             ["tmux", "kill-session", "-t", session],
@@ -197,10 +199,14 @@ def stop(session: str) -> None:
     deadline = time.monotonic() + 2
     survivors = descendants
     while survivors and time.monotonic() < deadline:
-        survivors = [pid for pid in survivors if _process_alive(pid)]
+        survivors = [
+            pid
+            for pid in survivors
+            if _process_matches_captured_tree(pid, captured_tree)
+        ]
         if survivors:
             time.sleep(0.05)
-    _signal_processes(survivors, signal.SIGKILL)
+    _signal_processes(survivors, signal.SIGKILL, captured_tree=captured_tree)
 
 
 def _pane_pid(session: str) -> int | None:
@@ -227,6 +233,10 @@ def _pane_pid(session: str) -> int | None:
 
 
 def _descendant_pids(root_pid: int) -> list[int]:
+    return list(_descendant_parent_map(root_pid))
+
+
+def _descendant_parent_map(root_pid: int) -> dict[int, int]:
     completed = subprocess.run(
         ["ps", "-axo", "pid=,ppid="],
         capture_output=True,
@@ -234,8 +244,9 @@ def _descendant_pids(root_pid: int) -> list[int]:
         check=False,
     )
     if completed.returncode != 0 or not isinstance(completed.stdout, str):
-        return []
+        return {}
     children: dict[int, list[int]] = {}
+    parents: dict[int, int] = {}
     for line in completed.stdout.splitlines():
         try:
             pid_text, parent_text = line.split()
@@ -243,19 +254,29 @@ def _descendant_pids(root_pid: int) -> list[int]:
         except ValueError:
             continue
         children.setdefault(parent, []).append(pid)
+        parents[pid] = parent
 
-    descendants: list[int] = []
+    descendants: dict[int, int] = {}
     pending = list(children.get(root_pid, []))
     while pending:
         pid = pending.pop()
-        descendants.append(pid)
+        captured_parent = parents.get(pid)
+        if captured_parent is not None:
+            descendants[pid] = captured_parent
         pending.extend(children.get(pid, []))
     return descendants
 
 
-def _signal_processes(pids: list[int], sig: signal.Signals) -> None:
+def _signal_processes(
+    pids: list[int],
+    sig: signal.Signals,
+    *,
+    captured_tree: dict[int, int] | None = None,
+) -> None:
     process_groups: set[int] = set()
     for pid in pids:
+        if not _process_matches_captured_tree(pid, captured_tree):
+            continue
         try:
             process_groups.add(os.getpgid(pid))
         except ProcessLookupError:
@@ -266,10 +287,44 @@ def _signal_processes(pids: list[int], sig: signal.Signals) -> None:
         except (ProcessLookupError, PermissionError):
             continue
     for pid in pids:
+        if not _process_matches_captured_tree(pid, captured_tree):
+            continue
         try:
             os.kill(pid, sig)
         except (ProcessLookupError, PermissionError):
             continue
+
+
+def _process_matches_captured_tree(
+    pid: int,
+    captured_tree: dict[int, int] | None,
+) -> bool:
+    if captured_tree is None:
+        return _process_alive(pid)
+    expected_parent = captured_tree.get(pid)
+    if expected_parent is None:
+        return False
+    current_parent = _parent_pid(pid)
+    return current_parent == expected_parent
+
+
+def _parent_pid(pid: int) -> int | None:
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, EOFError):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        return int(completed.stdout.strip())
+    except ValueError:
+        return None
 
 
 def _process_alive(pid: int) -> bool:
@@ -350,6 +405,7 @@ def send_text(
             timeout_seconds=timeout_seconds,
         )
         if index < len(lines) - 1:
+            # Synthetic newline separator; user text is always sent literally above.
             _run_tmux_send_keys(
                 ["tmux", "send-keys", "-t", session, "M-Enter"],
                 timeout_seconds=timeout_seconds,

@@ -44,6 +44,9 @@ BRAIN_DIR = AGY_ROOT / "brain"
 JSONValue: TypeAlias = (
     "Mapping[str, Any] | list[Any] | str | int | float | bool | None"
 )
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+PRIVATE_STATE_FIELDS = frozenset({"prompt", "command", "completion_marker"})
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -53,13 +56,15 @@ def validate_identifier(value: str, label: str) -> str:
     """Validate an identifier before using it as one filesystem path segment."""
     if (
         not isinstance(value, str)
-        or not value
         or "\0" in value
         or value in {".", ".."}
         or Path(value).name != value
-        or len(value.encode("utf-8")) > 255
+        or not IDENTIFIER_PATTERN.fullmatch(value)
     ):
-        raise ValueError(f"{label} must be a single non-empty path segment")
+        raise ValueError(
+            f"{label} must match {IDENTIFIER_PATTERN.pattern} "
+            "and be a single path segment"
+        )
     return value
 
 
@@ -150,8 +155,9 @@ def update_goal(
 
 
 def public_state(state: dict[str, Any]) -> dict[str, Any]:
-    hidden = {"prompt", "command", "completion_marker"}
-    return {key: value for key, value in state.items() if key not in hidden}
+    return {
+        key: value for key, value in state.items() if key not in PRIVATE_STATE_FIELDS
+    }
 
 
 def process_alive(pid: int | None) -> bool:
@@ -165,8 +171,6 @@ def process_alive(pid: int | None) -> bool:
 
 
 def active_runs(state_root: Path | None = None) -> list[RunState]:
-    from contextlib import suppress
-
     actual_state_root = state_root or STATE_ROOT
     active_dir = actual_state_root / "active"
     if not active_dir.exists():
@@ -208,29 +212,7 @@ def _read_tail(path: Path, max_bytes: int) -> str:
 def provider_health(log_path: Path) -> dict[str, Any]:
     """Classify provider health from bounded recent Antigravity logs."""
     text = _read_tail(log_path, 100_000).lower()
-    if not text:
-        return {"status": "unknown"}
-    if "resource_exhausted" in text or "quota exhausted" in text:
-        return {"status": "quota_exhausted"}
-    if "rate limit" in text or "too many requests" in text:
-        return {"status": "rate_limited"}
-    if "applyauthresult:" in text:
-        return {"status": "authenticated"}
-    if (
-        "failed to get oauth token" in text
-        or "oauth token" in text
-        or "not logged into antigravity" in text
-    ):
-        return {
-            "status": "auth_interaction_required",
-            "action": (
-                "Open the visible terminal or send `yes` to the run's tmux "
-                "session, then retry if authentication does not resume."
-            ),
-        }
-    if "you are not logged into antigravity" in text:
-        return {"status": "auth_unavailable"}
-    return {"status": "unknown"}
+    return _classify_provider_health_text(text)
 
 
 def run_provider_health(directory: Path) -> dict[str, Any]:
@@ -240,14 +222,62 @@ def run_provider_health(directory: Path) -> dict[str, Any]:
         return health
     stdout_path = directory / "agy.stdout.log"
     text = _read_tail(stdout_path, 20_000).lower()
-    if "timed out waiting for response" in text:
-        return {
-            "status": "response_timeout",
-            "action": (
-                "If the visible terminal is waiting for confirmation, call "
-                "agy_run_input with text='yes'."
+    stdout_health = _classify_provider_health_text(
+        text,
+        include_response_timeout=True,
+    )
+    return stdout_health if stdout_health["status"] != "unknown" else health
+
+
+def _classify_provider_health_text(
+    text: str,
+    *,
+    include_response_timeout: bool = False,
+) -> dict[str, Any]:
+    if not text:
+        return {"status": "unknown"}
+    signals: list[tuple[str, tuple[str, ...], str | None]] = [
+        ("quota_exhausted", ("resource_exhausted", "quota exhausted"), None),
+        ("rate_limited", ("rate limit", "too many requests"), None),
+        ("authenticated", ("applyauthresult:",), None),
+        (
+            "auth_interaction_required",
+            (
+                "failed to get oauth token",
+                "oauth token",
+                "not logged into antigravity",
             ),
-        }
+            (
+                "Open the visible terminal or send `yes` to the run's tmux "
+                "session, then retry if authentication does not resume."
+            ),
+        ),
+        ("auth_unavailable", ("you are not logged into antigravity",), None),
+    ]
+    if include_response_timeout:
+        signals.append(
+            (
+                "response_timeout",
+                ("timed out waiting for response",),
+                (
+                    "If the visible terminal is waiting for confirmation, call "
+                    "agy_run_input with text='yes'."
+                ),
+            )
+        )
+    latest: tuple[int, str, str | None] | None = None
+    for status, phrases, action in signals:
+        position = max(text.rfind(phrase) for phrase in phrases)
+        if position < 0:
+            continue
+        if latest is None or position >= latest[0]:
+            latest = (position, status, action)
+    if latest is None:
+        return {"status": "unknown"}
+    _, status, action = latest
+    health: dict[str, Any] = {"status": status}
+    if action:
+        health["action"] = action
     return health
 
 

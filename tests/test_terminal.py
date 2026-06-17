@@ -182,6 +182,23 @@ def test_terminal_attach_opens_terminal_app(monkeypatch):
     }
 
 
+def test_terminal_attach_escapes_session_for_shell_and_applescript(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+
+    terminal.attach('agy-target"; say "oops', check=True)
+
+    script = calls[0][0][2]
+    assert "say" not in script.split("tmux attach-session", 1)[0]
+    assert "agy-target" in script
+    assert '\\"' in script
+
+
 def test_terminal_attach_timeout_is_structured(monkeypatch):
     def run(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])

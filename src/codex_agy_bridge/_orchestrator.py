@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -50,6 +51,10 @@ RESULT_PREVIEW_BYTES = 4096
 RESULT_READ_MAX_BYTES = 262_144
 WAIT_TIMEOUT_MAX_SECONDS = 3600
 CANCEL_TERM_GRACE_SECONDS = 0.25
+CANCEL_RUNNER_GRACE_SECONDS = float(
+    os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
+)
+INPUT_MAX_BYTES = 65_536
 
 
 def _global_max_parallel() -> int:
@@ -183,6 +188,17 @@ def _latest_step_with_content(state: RunState) -> dict[str, Any] | None:
         max_content_chars=2000,
     )
     return steps[-1] if steps else latest
+
+
+def _run_age_seconds(state: RunState) -> float | None:
+    started_at = state.get("started_at") or state.get("created_at")
+    if not isinstance(started_at, str):
+        return None
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, time.time() - started.timestamp())
 
 
 # _call_with_optional_state_root removed (audit #3).
@@ -510,10 +526,8 @@ class RunnerOrchestrator:
                         f"Goal parallel run limit {goal_max_parallel} reached ({ids})."
                     )
 
-            run_id = (
-                f"{core.utc_now().replace(':', '').replace('+00:00', 'Z')}-"
-                f"{uuid.uuid4().hex[:8]}"
-            )
+            timestamp = core.utc_now().replace("+00:00", "Z").replace(":", "")
+            run_id = f"{timestamp}-{uuid.uuid4().hex[:8]}"
             directory = self.run_dir(run_id)
             directory.mkdir(parents=True, exist_ok=False)
             now = core.utc_now()
@@ -599,7 +613,9 @@ class RunnerOrchestrator:
                 finished_at=core.utc_now(),
                 only_if_active=True,
             )
-            if state["status"] in {"failed", "canceled"}:
+            if state["status"] in {"failed", "canceled"} and (
+                self._reaper_can_kill_session(state)
+            ):
                 self.get_session(state).kill()
         if compact:
             snapshot = run_control_snapshot.RunControlSnapshot.from_run(
@@ -988,6 +1004,11 @@ class RunnerOrchestrator:
         )
         if state["status"] not in ACTIVE_STATUSES:
             return core.public_state(cast(dict[str, Any], state))
+        grace_state = self._wait_for_cancel_ack(run_id)
+        if grace_state is not None and grace_state["status"] not in ACTIVE_STATUSES:
+            if grace_state["status"] == "canceled":
+                self._discard_result_artifact(run_id)
+            return core.public_state(cast(dict[str, Any], grace_state))
         session = self.get_session(state)
         self._terminate_for_cancel(state, session)
         self._discard_result_artifact(run_id)
@@ -1006,6 +1027,19 @@ class RunnerOrchestrator:
                 {"status": "canceled"},
             )
         return core.public_state(cast(dict[str, Any], state))
+
+    def _wait_for_cancel_ack(self, run_id: str) -> RunState | None:
+        if CANCEL_RUNNER_GRACE_SECONDS <= 0:
+            return None
+        deadline = time.monotonic() + CANCEL_RUNNER_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            state = self.load_state(run_id)
+            if state["status"] not in ACTIVE_STATUSES:
+                return state
+            if state["status"] != "cancel_requested":
+                return state
+            time.sleep(0.05)
+        return self.load_state(run_id)
 
     def _terminate_for_cancel(
         self,
@@ -1035,6 +1069,15 @@ class RunnerOrchestrator:
         with suppress(OSError, ValueError, TypeError):
             return self.process_manager.is_alive(pid)
         return False
+
+    def _reaper_can_kill_session(self, state: RunState) -> bool:
+        timeout = state.get("timeout_seconds")
+        if not isinstance(timeout, int):
+            return True
+        age_seconds = _run_age_seconds(state)
+        if age_seconds is None:
+            return True
+        return age_seconds >= max(0, timeout + 30)
 
     def create_goal(
         self,
@@ -1310,6 +1353,7 @@ class RunnerOrchestrator:
         """
         state = self.load_state(run_id)
         delivery_id = uuid.uuid4().hex
+        input_bytes = len(text.encode("utf-8"))
         if (
             state.get("execution_surface") != "foreground"
             or not state.get("human_attachable")
@@ -1317,6 +1361,22 @@ class RunnerOrchestrator:
             raise ValueError(
                 "text input is only supported for foreground attachable Runs"
             )
+        if input_bytes > INPUT_MAX_BYTES:
+            return {
+                "run_id": run_id,
+                "tmux_session": state.get("tmux_session"),
+                "sent": False,
+                "delivery_id": delivery_id,
+                "delivery_state": "rejected",
+                "error_kind": "input_too_large",
+                "error": f"text exceeds {INPUT_MAX_BYTES} bytes",
+                "input_bytes": input_bytes,
+                "max_input_bytes": INPUT_MAX_BYTES,
+                "execution_mode": state.get("execution_mode", "print"),
+                "agent_mode": state.get("agent_mode", "task"),
+                "execution_surface": state.get("execution_surface", "headless"),
+                "human_attachable": state.get("human_attachable", False),
+            }
         delivery = (
             "foreground_mcp_submit"
             if enter and bool(text)

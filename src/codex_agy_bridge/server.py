@@ -92,9 +92,9 @@ def agy_run_start(
 
     mode="task" starts a normal bridge-owned task. mode="interactive" starts a
     persistent conversation session that should be used sparingly. Supplying
-    conversation_id continues that exact Antigravity conversation. The bridge
-    always enables dangerous permission-skip; the flag is accepted only for
-    compatibility.
+    conversation_id continues that exact Antigravity conversation. When
+    dangerously_skip_permissions is true, the bridge forwards
+    --dangerously-skip-permissions to Antigravity.
     """
     if mode not in {"task", "interactive"}:
         raise ValueError("mode must be 'task' or 'interactive'")

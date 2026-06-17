@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import traceback
 from contextlib import suppress
 from datetime import UTC, datetime
 
@@ -45,8 +46,16 @@ class RunSupervisor:
         self.progress_stall_seconds = float(
             os.environ.get("AGY_BRIDGE_TRANSCRIPT_IDLE_SECONDS", "90")
         )
-        self.last_progress_stalled_step: int | None = None
+        self.next_progress_stall_event_at: float | None = None
+        self.completion_idle_seconds = float(
+            os.environ.get("AGY_BRIDGE_COMPLETION_IDLE_SECONDS", "2")
+        )
+        self.interactive_timeout_grace_seconds = float(
+            os.environ.get("AGY_BRIDGE_INTERACTIVE_TIMEOUT_GRACE_SECONDS", "3600")
+        )
         self.interactive_waiting_after_step: int | None = None
+        self.done_response_step_index: int | None = None
+        self.done_response_seen_at: float | None = None
         self.prompt_detector = PromptDetector(
             self.directory,
             tmux_session=(
@@ -68,6 +77,11 @@ class RunSupervisor:
         except Exception as error:
             with suppress(Exception):
                 self._stop()
+            with suppress(OSError):
+                (self.directory / "supervisor-traceback.log").write_text(
+                    traceback.format_exc(),
+                    encoding="utf-8",
+                )
             self._finish(
                 status="failed",
                 error=f"{type(error).__name__}: {error}",
@@ -93,7 +107,7 @@ class RunSupervisor:
             self.run_id,
             status="running",
             runner_pid=os.getpid(),
-            command=command[:-1] + ["<prompt>"],
+            command=[*command[:-1], "<prompt>"],
             launched_at=self.launched_at,
             started_at=self.state.get("started_at") or self.state.get("created_at"),
         )
@@ -124,7 +138,7 @@ class RunSupervisor:
                 handle.write(f"Terminal auto-open failed: {error}\n")
 
     def _monitor_until_exit(self) -> int | None:
-        deadline = time.monotonic() + int(self.state["timeout_seconds"]) + 30
+        deadline = time.monotonic() + self._hard_timeout_seconds()
         while runtime.run_active(self.session):
             if self.cancel_path.exists():
                 self._stop()
@@ -143,15 +157,18 @@ class RunSupervisor:
                 )
                 self._stop()
                 return 0
-            if (
-                self.state.get("execution_mode") != "interactive"
-                and time.monotonic() >= deadline
-            ):
+            if time.monotonic() >= deadline:
                 self._stop()
                 self._finish(status="failed", error="hard timeout exceeded")
                 return 1
             time.sleep(0.5)
         return None
+
+    def _hard_timeout_seconds(self) -> float:
+        timeout = float(int(self.state["timeout_seconds"]) + 30)
+        if self.state.get("execution_mode") == "interactive":
+            timeout += max(0.0, self.interactive_timeout_grace_seconds)
+        return timeout
 
     def _observe_conversation(self, *, force: bool = False) -> None:
         if not self.conversation_id:
@@ -193,10 +210,12 @@ class RunSupervisor:
                     and isinstance(record.get("step_index"), int)
                 ):
                     self.latest_response_step_index = record["step_index"]
+                    self.done_response_step_index = record["step_index"]
+                    self.done_response_seen_at = time.monotonic()
             if latest_step > self.latest_transcript_step_index:
                 self.latest_transcript_step_index = latest_step
                 self.transcript_advanced_at = time.monotonic()
-                self.last_progress_stalled_step = None
+                self.next_progress_stall_event_at = None
             if records and self.session:
                 runtime.append_terminal_progress(
                     records,
@@ -208,13 +227,18 @@ class RunSupervisor:
         if (
             self.latest_transcript_step_index < 0
             or self.progress_stall_seconds <= 0
-            or self.last_progress_stalled_step == self.latest_transcript_step_index
         ):
             return
-        idle_seconds = int(time.monotonic() - self.transcript_advanced_at)
+        now = time.monotonic()
+        idle_seconds = int(now - self.transcript_advanced_at)
         if idle_seconds < self.progress_stall_seconds:
             return
-        self.last_progress_stalled_step = self.latest_transcript_step_index
+        if (
+            self.next_progress_stall_event_at is not None
+            and now < self.next_progress_stall_event_at
+        ):
+            return
+        self.next_progress_stall_event_at = now + self.progress_stall_seconds
         session_events.append_event(
             self.directory,
             "progress_stalled",
@@ -224,12 +248,13 @@ class RunSupervisor:
                 "source": "runner",
                 "dedupe_key": (
                     f"progress_stalled:{self.run_id}:"
-                    f"{self.latest_transcript_step_index}"
+                    f"{self.latest_transcript_step_index}:{idle_seconds}"
                 ),
                 "observed": {
                     "activity_state": "possibly_stalled",
                     "latest_transcript_step": self.latest_transcript_step_index,
                     "idle_seconds": idle_seconds,
+                    "stalled_for_seconds": idle_seconds,
                     "suggested_next_tool": "agy_terminal_snapshot",
                 },
             },
@@ -277,7 +302,24 @@ class RunSupervisor:
         text = interactive_input.peek(self.directory)
         if text is None:
             return
-        TmuxSession(self.directory, session_name=self.session).send_input(text)
+        try:
+            TmuxSession(self.directory, session_name=self.session).send_input(text)
+        except Exception as error:
+            session_events.append_event(
+                self.directory,
+                "mcp_input_failed",
+                {
+                    "category": "mcp_input",
+                    "severity": "error",
+                    "source": "runner",
+                    "observed": {
+                        "activity_state": "awaiting_mcp_input",
+                        "error_kind": "queued_delivery_failed",
+                        "error": str(error),
+                    },
+                },
+            )
+            return
         runtime.update_state(
             self.run_id,
             interactive_prompt_in_flight=True,
@@ -290,16 +332,26 @@ class RunSupervisor:
 
     def _completion_is_stable(self, response: str | None) -> bool:
         marker = str(self.state["completion_marker"])
-        if not marker:
-            return False
-        if not response or marker not in response:
+        if marker and response and marker in response:
+            if response != self.marker_response:
+                self.marker_response = response
+                self.marker_seen_at = time.monotonic()
+            return True
+        if marker:
             self.marker_response = None
             self.marker_seen_at = None
+        if self.state.get("execution_mode") == "interactive":
             return False
-        if response != self.marker_response:
-            self.marker_response = response
-            self.marker_seen_at = time.monotonic()
-        return True
+        if (
+            not response
+            or self.done_response_step_index is None
+            or self.done_response_seen_at is None
+            or self.latest_transcript_step_index != self.done_response_step_index
+        ):
+            return False
+        return time.monotonic() - self.done_response_seen_at >= (
+            self.completion_idle_seconds
+        )
 
     def _finish_after_exit(self) -> int:
         self._observe_conversation(force=True)

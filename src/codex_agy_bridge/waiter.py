@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,6 +22,7 @@ ATTENTION_EVENTS = {
     "run_canceled",
 }
 TERMINAL_EVENTS = {"run_completed", "run_failed", "run_canceled"}
+ATTENTION_STATE_FILE = "attention.state.json"
 
 
 def wait_for_runs(
@@ -62,7 +64,7 @@ def wait_for_runs(
             state_root=state_root,
             load_state=load_state,
             prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
-            detect_prompts=False,
+            detect_prompts=condition == "any_attention",
         )
         if condition == "any_attention":
             attention_events = _ensure_attention_events(run_dirs, runs, after=after)
@@ -72,7 +74,7 @@ def wait_for_runs(
                     state_root=state_root,
                     load_state=load_state,
                     prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
-                    detect_prompts=False,
+                    detect_prompts=True,
                 )
                 return _result(
                     condition,
@@ -93,7 +95,15 @@ def wait_for_runs(
         if now >= deadline or now >= watchdog_deadline:
             return _result(condition, False, [], runs)
         time.sleep(min(poll_interval, max(0.0, deadline - now)))
-        poll_interval = min(1.0, 0.5 if poll_interval >= 0.1 else poll_interval * 2)
+        poll_interval = _next_poll_interval(poll_interval)
+
+
+def _next_poll_interval(current: float) -> float:
+    if current < 0.2:
+        return 0.2
+    if current < 0.5:
+        return 0.5
+    return 1.0
 
 
 def _prompt_detectors(
@@ -146,7 +156,11 @@ def _observe_current_prompts(
             payload["severity"] = "action_required"
             payload["observed"].update(event.attention)
             payload["observed"]["suggested_inputs"] = ["y", "n"]
-        session_events.append_event(detector.run_dir, event.kind, payload)
+        appended = session_events.append_event(detector.run_dir, event.kind, payload)
+        if event.kind == "needs_attention":
+            _write_attention_state(detector.run_dir, appended)
+        elif event.kind == "attention_cleared":
+            _write_attention_state(detector.run_dir, None)
 
 
 def _matching_events(
@@ -163,7 +177,7 @@ def _matching_events(
             continue
         for event in session_events.read_events(run_dir, after_event_id=cursor):
             if _event_matches(event, condition):
-                events.append(event)
+                events.append(dict(event))
     events.sort(
         key=lambda event: (
             str(event.get("created_at", "")),
@@ -173,7 +187,7 @@ def _matching_events(
     return events
 
 
-def _event_matches(event: dict[str, Any], condition: WaitCondition) -> bool:
+def _event_matches(event: Mapping[str, Any], condition: WaitCondition) -> bool:
     kind = event.get("kind")
     if condition == "any_event":
         return True
@@ -204,12 +218,14 @@ def _compact_runs(
             error = state.get("error")
             conversation_id = state.get("conversation_id")
             finished_at = state.get("finished_at")
-            snapshot = run_control_snapshot.RunControlSnapshot.from_run(
-                run_id,
-                state_root=state_root,
-                load_state=load_state,
-                prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
-                detect_prompts=detect_prompts,
+            snapshot: dict[str, Any] = dict(
+                run_control_snapshot.RunControlSnapshot.from_run(
+                    run_id,
+                    state_root=state_root,
+                    load_state=load_state,
+                    prompt_capture_timeout_seconds=prompt_capture_timeout_seconds,
+                    detect_prompts=detect_prompts,
+                )
             )
         except Exception as error_value:
             status = "failed"
@@ -262,49 +278,142 @@ def _ensure_attention_events(
             continue
         run_dir = run_dirs[run_id]
         existing = _active_needs_attention_event(run_dir)
+        payload = _attention_event_payload(run_id, attention)
         if existing is not None:
-            if existing in session_events.read_events(
-                run_dir,
-                after_event_id=after.get(run_id),
-                limit=10_000,
-            ):
-                events.append(existing)
-            continue
-        prompt = attention.get("prompt")
-        suggested_inputs = attention.get("suggested_inputs")
-        events.append(
-            session_events.append_event(
-                run_dir,
-                "needs_attention",
-                {
-                    "category": attention.get("reason") or "approval_prompt",
-                    "severity": "action_required",
-                    "source": attention.get("source") or "bridge",
-                    "dedupe_key": attention.get("dedupe_key")
-                    or f"needs_attention:{run_id}",
-                    "observed": {
-                        "activity_state": "awaiting_user",
-                        "prompt": prompt if isinstance(prompt, str) else None,
-                        "suggested_inputs": (
-                            suggested_inputs
-                            if isinstance(suggested_inputs, list)
-                            and all(isinstance(item, str) for item in suggested_inputs)
-                            else []
-                        ),
+            if _attention_payload(existing) != payload:
+                session_events.append_event(
+                    run_dir,
+                    "attention_cleared",
+                    {
+                        "category": "approval_prompt",
+                        "source": "bridge",
+                        "dedupe_key": f"attention_cleared:{run_id}",
+                        "observed": {
+                            "activity_state": "working",
+                            "reason": "attention_changed",
+                        },
                     },
+                )
+                _write_attention_state(run_dir, None)
+            elif _event_after_cursor(existing, after.get(run_id)):
+                events.append(existing)
+                continue
+            else:
+                continue
+        event = session_events.append_event(
+            run_dir,
+            "needs_attention",
+            {
+                "category": payload["reason"] or "approval_prompt",
+                "severity": "action_required",
+                "source": payload["source"],
+                "dedupe_key": payload["dedupe_key"],
+                "observed": {
+                    "activity_state": "awaiting_user",
+                    "prompt": payload["prompt"],
+                    "suggested_inputs": payload["suggested_inputs"],
                 },
-            )
+            },
         )
+        _write_attention_state(run_dir, event)
+        events.append(dict(event))
     return events
 
 
 def _active_needs_attention_event(run_dir: Path) -> dict[str, Any] | None:
+    state_event = _read_attention_state(run_dir)
+    if state_event is not None:
+        return state_event
     for event in reversed(session_events.read_events(run_dir, limit=10_000)):
         kind = event.get("kind")
         if kind == "attention_cleared":
+            _write_attention_state(run_dir, None)
             return None
         if kind == "needs_attention":
-            return event
+            _write_attention_state(run_dir, event)
+            return dict(event)
+    return None
+
+
+def _attention_event_payload(
+    run_id: str,
+    attention: dict[str, Any],
+) -> dict[str, Any]:
+    prompt = attention.get("prompt")
+    suggested_inputs = attention.get("suggested_inputs")
+    return {
+        "reason": attention.get("reason") or "approval_prompt",
+        "source": attention.get("source") or "bridge",
+        "dedupe_key": attention.get("dedupe_key") or f"needs_attention:{run_id}",
+        "prompt": prompt if isinstance(prompt, str) else None,
+        "suggested_inputs": (
+            suggested_inputs
+            if isinstance(suggested_inputs, list)
+            and all(isinstance(item, str) for item in suggested_inputs)
+            else []
+        ),
+    }
+
+
+def _attention_payload(event: Mapping[str, Any]) -> dict[str, Any]:
+    observed = event.get("observed")
+    observed = observed if isinstance(observed, dict) else {}
+    suggested_inputs = observed.get("suggested_inputs")
+    return {
+        "reason": event.get("category") or "approval_prompt",
+        "source": event.get("source") or "bridge",
+        "dedupe_key": event.get("dedupe_key"),
+        "prompt": (
+            observed.get("prompt") if isinstance(observed.get("prompt"), str) else None
+        ),
+        "suggested_inputs": (
+            suggested_inputs
+            if isinstance(suggested_inputs, list)
+            and all(isinstance(item, str) for item in suggested_inputs)
+            else []
+        ),
+    }
+
+
+def _read_attention_state(run_dir: Path) -> dict[str, Any] | None:
+    path = run_dir / ATTENTION_STATE_FILE
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(state, dict) or not state.get("active"):
+        return None
+    event = state.get("event")
+    return event if isinstance(event, dict) else None
+
+
+def _write_attention_state(run_dir: Path, event: Mapping[str, Any] | None) -> None:
+    payload = {"active": event is not None, "event": dict(event) if event else None}
+    core.atomic_write_json(run_dir / ATTENTION_STATE_FILE, payload)
+
+
+def _event_after_cursor(event: Mapping[str, Any], cursor: str | None) -> bool:
+    event_seq = _cursor_to_int(event.get("event_id")) or _cursor_to_int(
+        event.get("run_seq")
+    )
+    cursor_seq = _cursor_to_int(cursor)
+    if event_seq is None:
+        return cursor is None
+    if cursor_seq is None:
+        return True
+    return event_seq > cursor_seq
+
+
+def _cursor_to_int(cursor: object) -> int | None:
+    if isinstance(cursor, int) and cursor >= 0:
+        return cursor
+    if not isinstance(cursor, str):
+        return None
+    if cursor.isdecimal():
+        return int(cursor)
+    _, separator, run_seq = cursor.rpartition(":")
+    if separator and run_seq.isdecimal():
+        return int(run_seq)
     return None
 
 
@@ -331,7 +440,7 @@ def _latest_terminal_events(run_dirs: dict[str, Path]) -> list[dict[str, Any]]:
     for run_dir in run_dirs.values():
         for event in reversed(session_events.read_events(run_dir, limit=10_000)):
             if event.get("kind") in TERMINAL_EVENTS:
-                events.append(event)
+                events.append(dict(event))
                 break
     return events
 

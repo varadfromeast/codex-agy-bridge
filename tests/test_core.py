@@ -304,6 +304,21 @@ def test_classifies_provider_health_from_recent_log(tmp_path):
     assert core.provider_health(log) == {"status": "quota_exhausted"}
 
 
+def test_provider_health_uses_most_recent_signal(tmp_path):
+    log = tmp_path / "agy.log"
+    log.write_text(
+        "applyAuthResult: consumer\nlater: rate limit\n",
+        encoding="utf-8",
+    )
+    assert core.provider_health(log) == {"status": "rate_limited"}
+
+    log.write_text(
+        "rate limit\nlater: applyAuthResult: consumer\n",
+        encoding="utf-8",
+    )
+    assert core.provider_health(log) == {"status": "authenticated"}
+
+
 def test_provider_health_reads_a_bounded_binary_tail(tmp_path, monkeypatch):
     log = tmp_path / "agy.log"
     log.write_bytes(b"x" * 120_000 + b"\napplyAuthResult: consumer\n")
@@ -326,6 +341,12 @@ def test_run_provider_health_reports_response_timeout_action(tmp_path):
 
     assert health["status"] == "response_timeout"
     assert "agy_run_input" in health["action"]
+
+
+def test_validate_identifier_rejects_shell_metacharacters():
+    for value in ("run one", "run;one", "run$one", "run:one", "`run`"):
+        with pytest.raises(ValueError):
+            core.validate_identifier(value, "run_id")
 
 
 

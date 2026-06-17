@@ -6,7 +6,7 @@ import time
 import pytest
 
 from codex_agy_bridge import core, session_events, terminal
-from codex_agy_bridge.waiter import wait_for_runs
+from codex_agy_bridge.waiter import _next_poll_interval, wait_for_runs
 
 
 def test_wait_for_runs_returns_when_attention_event_arrives(tmp_path):
@@ -183,6 +183,58 @@ def test_wait_for_runs_does_not_rewake_on_active_attention_at_after_cursor(tmp_p
     assert result["matched"] is False
     assert result["events"] == []
     assert result["runs"]["run-1"]["attention"]["required"] is True
+
+
+def test_wait_for_runs_reissues_attention_when_prompt_changes(tmp_path):
+    state_root = tmp_path / "state"
+    run_dir = core.run_dir("run-1", state_root=state_root)
+    core.atomic_write_json(
+        core.state_path("run-1", state_root=state_root),
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "tmux_session": None,
+        },
+    )
+    old = session_events.append_event(
+        run_dir,
+        "needs_attention",
+        {
+            "category": "approval_prompt",
+            "source": "bridge",
+            "dedupe_key": "needs_attention:run-1",
+            "observed": {
+                "activity_state": "awaiting_user",
+                "prompt": "Old prompt?",
+                "suggested_inputs": ["y", "n"],
+            },
+        },
+    )
+    (run_dir / "terminal.log").write_text("Approve command?", encoding="utf-8")
+
+    result = wait_for_runs(
+        {"run-1": run_dir},
+        state_root=state_root,
+        condition="any_attention",
+        after={"run-1": old["event_id"]},
+        timeout_seconds=0,
+    )
+
+    events = session_events.read_events(run_dir)
+    assert result["matched"] is True
+    assert [event["kind"] for event in events[-2:]] == [
+        "attention_cleared",
+        "needs_attention",
+    ]
+    assert result["events"][0]["kind"] == "needs_attention"
+    assert result["events"][0]["observed"]["prompt"] == "Approve command?"
+
+
+def test_waiter_poll_interval_uses_clean_backoff_schedule():
+    assert _next_poll_interval(0.1) == 0.2
+    assert _next_poll_interval(0.2) == 0.5
+    assert _next_poll_interval(0.5) == 1.0
+    assert _next_poll_interval(1.0) == 1.0
 
 
 def test_wait_for_runs_all_terminal_matches_when_every_run_is_terminal(tmp_path):

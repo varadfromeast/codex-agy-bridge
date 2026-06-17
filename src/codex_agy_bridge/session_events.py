@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from filelock import FileLock
 
@@ -122,22 +123,25 @@ def append_event(
     run_dir.mkdir(parents=True, exist_ok=True)
     with FileLock(str(run_dir / EVENTS_LOCK), timeout=10):
         run_seq = _next_run_seq(run_dir)
-        event: SessionEvent = {
-            "event_id": f"{run_dir.name}:{run_seq}",
-            "run_id": run_dir.name,
-            "run_seq": run_seq,
-            "kind": kind,
-            "category": payload.pop("category", EVENT_CATEGORIES[kind]),
-            "severity": payload.pop(
-                "severity",
-                "error" if kind in {"run_failed", "mcp_input_failed"} else "info",
-            ),
-            "source": payload.pop("source", "bridge"),
-            "dedupe_key": payload.pop("dedupe_key", f"{kind}:{run_dir.name}"),
-            "created_at": core.utc_now(),
-            "observed": observed,
-            **payload,
-        }
+        event = cast(
+            SessionEvent,
+            {
+                "event_id": f"{run_dir.name}:{run_seq}",
+                "run_id": run_dir.name,
+                "run_seq": run_seq,
+                "kind": kind,
+                "category": payload.pop("category", EVENT_CATEGORIES[kind]),
+                "severity": payload.pop(
+                    "severity",
+                    "error" if kind in {"run_failed", "mcp_input_failed"} else "info",
+                ),
+                "source": payload.pop("source", "bridge"),
+                "dedupe_key": payload.pop("dedupe_key", f"{kind}:{run_dir.name}"),
+                "created_at": core.utc_now(),
+                "observed": observed,
+                **payload,
+            },
+        )
         line = json.dumps(event, ensure_ascii=False, sort_keys=True)
         with (run_dir / EVENTS_FILE).open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
@@ -196,7 +200,7 @@ def read_events(
             continue
         if after_run_seq is not None and run_seq <= after_run_seq:
             continue
-        events.append(value)
+        events.append(cast(SessionEvent, value))
         if limit is not None and len(events) >= limit:
             break
     return events
@@ -230,7 +234,7 @@ def _cursor_to_run_seq(cursor: object) -> int | None:
     return None
 
 
-def _event_run_seq(event: dict[str, Any]) -> int | None:
+def _event_run_seq(event: Mapping[str, Any]) -> int | None:
     run_seq = event.get("run_seq")
     if isinstance(run_seq, int) and run_seq >= 0:
         return run_seq

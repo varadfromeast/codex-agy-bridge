@@ -37,6 +37,7 @@ class AntigravityCli:
         self.max_output_chars = max_output_chars
         self.model_cache_seconds = model_cache_seconds
         self._command_lock = threading.Lock()
+        self._capabilities_lock = threading.Lock()
         self._capabilities: CliCapabilities | None = None
         self._models: list[str] | None = None
         self._models_observed_at = 0.0
@@ -61,13 +62,14 @@ class AntigravityCli:
         return self._run("--version").strip()
 
     def capabilities(self) -> CliCapabilities:
-        if self._capabilities is None:
-            output = self._run("--help")
-            self._capabilities = CliCapabilities(
-                sandbox="--sandbox" in output,
-                additional_directories="--add-dir" in output,
-                interactive="--prompt-interactive" in output,
-            )
+        with self._capabilities_lock:
+            if self._capabilities is None:
+                output = self._run("--help")
+                self._capabilities = CliCapabilities(
+                    sandbox="--sandbox" in output,
+                    additional_directories="--add-dir" in output,
+                    interactive="--prompt-interactive" in output,
+                )
         return self._capabilities
 
     def models(self, *, refresh: bool = False) -> list[str]:

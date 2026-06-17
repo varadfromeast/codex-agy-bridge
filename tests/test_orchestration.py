@@ -239,6 +239,35 @@ def test_foreground_send_text_submits_directly_to_tmux(monkeypatch, tmp_path):
     assert result["delivery"] == "foreground_mcp_submit"
 
 
+def test_send_text_rejects_oversized_input_before_tmux(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+        "tmux_session": "agy-target",
+        "execution_mode": "print",
+        "agent_mode": "task",
+        "execution_surface": "foreground",
+        "human_attachable": True,
+    }
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+    monkeypatch.setattr(orchestration, "_orchestrator", orch)
+    monkeypatch.setattr(
+        orchestration.terminal,
+        "send_text",
+        lambda *_args, **_kwargs: pytest.fail("oversized input must not hit tmux"),
+    )
+
+    result = orchestration.send_text("run-1", "x" * (65_536 + 1))
+
+    assert result["sent"] is False
+    assert result["delivery_state"] == "rejected"
+    assert result["error_kind"] == "input_too_large"
+    assert result["max_input_bytes"] == 65_536
+    assert session_events.read_events(state_root / "runs" / "run-1") == []
+
+
 def test_wait_returns_compact_event_updates(monkeypatch, tmp_path):
     state_root = isolate_state_root(monkeypatch, tmp_path)
     mem_store = MemoryRunStore()
@@ -520,7 +549,8 @@ def test_cancel_emits_cancel_requested(tmp_path):
             "human_attachable": True,
         },
     )
-    session = MockSession(tmp_path / "state" / "runs" / "run-1")
+    run_dir = tmp_path / "state" / "runs" / "run-1"
+    session = MockSession(run_dir)
     session._alive = True
 
     orchestrator = RunnerOrchestrator(
@@ -535,6 +565,73 @@ def test_cancel_emits_cancel_requested(tmp_path):
     assert [event["kind"] for event in events[-2:]] == [
         "cancel_requested",
         "run_canceled",
+    ]
+
+
+def test_cancel_preserves_runner_terminal_state_during_grace(monkeypatch, tmp_path):
+    store = MemoryRunStore()
+    store.save_run(
+        "run-1",
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "runner_pid": 123,
+            "tmux_session": "agy-target",
+            "execution_surface": "foreground",
+            "human_attachable": True,
+            "result": None,
+        },
+    )
+    run_dir = tmp_path / "state" / "runs" / "run-1"
+    session = MockSession(run_dir)
+    session._alive = True
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.CANCEL_RUNNER_GRACE_SECONDS",
+        0.2,
+    )
+
+    def finish_during_sleep(_delay):
+        store.update_run(
+            "run-1",
+            {
+                "status": "completed",
+                "result": "finished first",
+                "finished_at": core.utc_now(),
+            },
+        )
+
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.time.sleep",
+        finish_during_sleep,
+    )
+
+    class FailIfKilled(ProcessManager):
+        def spawn(self, args, cwd, stdout, stderr):
+            raise AssertionError("spawn is not expected")
+
+        def is_alive(self, pid):
+            return True
+
+        def killpg(self, gpid, sig):
+            raise AssertionError("cancel grace should avoid process termination")
+
+        def kill(self, pid, sig):
+            raise AssertionError("cancel grace should avoid process termination")
+
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        store=store,
+        process_manager=FailIfKilled(),
+        session_factory=lambda _state, _run_dir: session,
+    )
+
+    result = orchestrator.cancel("run-1")
+
+    assert result["status"] == "completed"
+    assert result["result"] == "finished first"
+    assert session.is_alive() is True
+    assert [event["kind"] for event in session_events.read_events(run_dir)] == [
+        "cancel_requested"
     ]
 
 

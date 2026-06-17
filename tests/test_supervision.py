@@ -139,14 +139,17 @@ def test_supervisor_emits_progress_stalled_after_transcript_idle(
     supervisor._observe_conversation()
     supervisor._observe_progress_stall()
     supervisor._observe_progress_stall()
+    clock.advance(31.0)
+    supervisor._observe_progress_stall()
 
     events = session_events.read_events(tmp_path)
     stalled_events = [event for event in events if event["kind"] == "progress_stalled"]
-    assert len(stalled_events) == 1
+    assert len(stalled_events) == 2
     assert stalled_events[0]["category"] == "progress"
     assert stalled_events[0]["severity"] == "warning"
     assert stalled_events[0]["observed"]["latest_transcript_step"] == 7
     assert stalled_events[0]["observed"]["idle_seconds"] == 31
+    assert stalled_events[1]["observed"]["stalled_for_seconds"] == 62
     assert stalled_events[0]["observed"]["suggested_next_tool"] == (
         "agy_terminal_snapshot"
     )
@@ -259,6 +262,31 @@ def test_supervisor_treats_explicit_completion_marker_as_stable(
     assert supervisor._completion_is_stable("final response DONE_MARKER")
 
 
+def test_supervisor_treats_stable_done_response_as_completed_without_marker(
+    monkeypatch, tmp_path
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+    }
+    clock = FakeClock(100.0)
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr("codex_agy_bridge.supervision.time.monotonic", clock)
+    supervisor = RunSupervisor("run-1")
+    supervisor.completion_idle_seconds = 2.0
+    supervisor.latest_transcript_step_index = 4
+    supervisor.done_response_step_index = 4
+    supervisor.done_response_seen_at = clock()
+
+    assert not supervisor._completion_is_stable("final response")
+    clock.advance(2.1)
+    assert supervisor._completion_is_stable("final response")
+
+
 def test_interactive_supervisor_does_not_finish_on_completion_marker(
     monkeypatch, tmp_path
 ):
@@ -273,6 +301,9 @@ def test_interactive_supervisor_does_not_finish_on_completion_marker(
     monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
     monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
     supervisor = RunSupervisor("run-1")
+    supervisor.latest_transcript_step_index = 4
+    supervisor.done_response_step_index = 4
+    supervisor.done_response_seen_at = 0.0
 
     assert not supervisor._completion_is_stable("initial response")
 
@@ -343,7 +374,7 @@ def test_supervisor_stops_session_after_unexpected_monitor_failure(
     assert updates[-1]["error"] == "RuntimeError: monitor failed"
 
 
-def test_interactive_supervisor_ignores_hard_timeout_while_session_is_alive(
+def test_interactive_supervisor_fails_after_extended_hard_timeout(
     monkeypatch, tmp_path
 ):
     state = {
@@ -355,12 +386,18 @@ def test_interactive_supervisor_ignores_hard_timeout_while_session_is_alive(
         "execution_mode": "interactive",
     }
     active = iter([True, False])
-    monotonic = iter([0.0, 10_000.0, 10_000.0])
+    monotonic = iter([0.0, 0.0, 10_000.0, 10_000.0])
     stopped = []
+    updates = []
     monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
     monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
     monkeypatch.setattr(runner, "run_active", lambda _session: next(active))
     monkeypatch.setattr(runner, "stop_run", lambda session: stopped.append(session))
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
     monkeypatch.setattr(
         "codex_agy_bridge.supervision.time.monotonic",
         lambda: next(monotonic),
@@ -368,8 +405,10 @@ def test_interactive_supervisor_ignores_hard_timeout_while_session_is_alive(
     monkeypatch.setattr("codex_agy_bridge.supervision.time.sleep", lambda _delay: None)
     supervisor = RunSupervisor("run-1")
 
-    assert supervisor._monitor_until_exit() is None
-    assert stopped == []
+    assert supervisor._monitor_until_exit() == 1
+    assert stopped == [None]
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["error"] == "hard timeout exceeded"
 
 
 def test_supervisor_launch_auto_opens_foreground_attachable_terminal(

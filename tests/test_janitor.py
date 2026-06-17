@@ -128,7 +128,9 @@ def test_janitor_sweeps_old_logs(tmp_path):
     run1_dir.mkdir()
     state1_file = run1_dir / "state.json"
     old_log = run1_dir / "agy.log"
+    final_result = run1_dir / "final-result.txt"
     old_log.write_text("old log", encoding="utf-8")
+    final_result.write_text("durable answer", encoding="utf-8")
     core.atomic_write_json(
         state1_file,
         {
@@ -161,9 +163,39 @@ def test_janitor_sweeps_old_logs(tmp_path):
     # Old logs should be swept without deleting durable run state.
     assert run1_dir.exists()
     assert state1_file.exists()
+    assert final_result.exists()
     assert not old_log.exists()
     # run-2 should remain intact
     assert run2_dir.exists()
+
+
+def test_janitor_preserves_fresh_pidless_queued_run(tmp_path):
+    state_root = tmp_path / "state"
+    pm = MockProcessManager()
+    orch = RunnerOrchestrator(state_root=state_root, process_manager=pm)
+    run_id = "queued-run"
+    run_dir = state_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    core.atomic_write_json(
+        run_dir / "state.json",
+        {
+            "run_id": run_id,
+            "status": "queued",
+            "created_at": (
+                datetime.now(UTC) - dt.timedelta(seconds=90)
+            ).isoformat(),
+            "runner_pid": None,
+            "agy_pid": None,
+        },
+    )
+    active_dir = state_root / "active"
+    active_dir.mkdir(parents=True)
+    core.atomic_write_json(active_dir / run_id, {"run_id": run_id})
+
+    orch.run_janitor()
+
+    assert (active_dir / run_id).exists()
+    assert orch.load_state(run_id)["status"] == "queued"
 
 
 def test_janitor_sweeps_old_terminal_notification_files(tmp_path):

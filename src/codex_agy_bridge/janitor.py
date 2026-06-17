@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -17,6 +18,9 @@ from codex_agy_bridge.state import (
     RunState,
 )
 from codex_agy_bridge.store import RunStore
+
+QUEUED_RUNNER_START_GRACE_SECONDS = 300.0
+SWEEP_PRESERVED_FILES = {"state.json", "state.lock", "final-result.txt"}
 
 
 class RunJanitor:
@@ -78,6 +82,7 @@ class RunJanitor:
                 agy_pid = state.get("agy_pid")
 
                 is_stale = False
+                age_seconds: float | None = None
                 created_at_str = state.get("created_at")
                 if created_at_str:
                     try:
@@ -93,6 +98,14 @@ class RunJanitor:
                     is_stale = True
 
                 if is_stale:
+                    if (
+                        state.get("status") == "queued"
+                        and not runner_pid
+                        and not agy_pid
+                        and age_seconds is not None
+                        and age_seconds <= QUEUED_RUNNER_START_GRACE_SECONDS
+                    ):
+                        continue
                     runner_alive = (
                         self.process_manager.is_alive(runner_pid)
                         if runner_pid
@@ -118,8 +131,6 @@ class RunJanitor:
         # Log Sweeper
         runs_root = self.state_root / "runs"
         if runs_root.exists():
-            import shutil
-
             now_ts = time.time()
             for run_path in list(runs_root.iterdir()):
                 if not run_path.is_dir():
@@ -136,7 +147,7 @@ class RunJanitor:
                                 )
                                 if state_data.get("status") in TERMINAL_STATUSES:
                                     for child in run_path.iterdir():
-                                        if child.name in {"state.json", "state.lock"}:
+                                        if child.name in SWEEP_PRESERVED_FILES:
                                             continue
                                         if child.is_dir():
                                             shutil.rmtree(child)

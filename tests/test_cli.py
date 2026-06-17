@@ -103,6 +103,27 @@ def test_cli_builds_interactive_command_with_added_directories(monkeypatch):
     ]
 
 
+def test_cli_omits_dangerous_skip_permissions_when_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.subprocess.run",
+        lambda _command, **_kwargs: completed("--prompt-interactive\n"),
+    )
+    cli = AntigravityCli(executable="agy")
+
+    command = cli.build_run_command(
+        {
+            "run_id": "run-1",
+            "timeout_seconds": 120,
+            "prompt": "work",
+            "execution_surface": "foreground",
+            "dangerously_skip_permissions": False,
+        },
+        run_directory="/tmp/run-1",
+    )
+
+    assert "--dangerously-skip-permissions" not in command
+
+
 def test_cli_builds_foreground_task_command_with_visible_interactive_cli(monkeypatch):
     monkeypatch.setattr(
         "codex_agy_bridge.cli.subprocess.run",
@@ -156,6 +177,27 @@ def test_cli_model_discovery_is_single_flight(monkeypatch):
         results = list(pool.map(lambda _: cli.models(), range(10)))
 
     assert results == [["Model A", "Model B"]] * 10
+    assert calls == 1
+
+
+def test_cli_capability_discovery_is_single_flight(monkeypatch):
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def run(_command, **_kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.05)
+        return completed("--sandbox\n--add-dir\n--prompt-interactive\n")
+
+    monkeypatch.setattr("codex_agy_bridge.cli.subprocess.run", run)
+    cli = AntigravityCli(executable="agy")
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(lambda _: cli.capabilities(), range(10)))
+
+    assert all(result.sandbox for result in results)
     assert calls == 1
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -53,19 +53,21 @@ class RunControlSnapshot(dict[str, Any]):
         )
         latest_kind = latest_event.get("kind") if latest_event else None
         if (
-            not attention.get("required")
-            and detect_prompts
+            detect_prompts
             and state["status"] in ACTIVE_STATUSES
             and latest_kind not in ATTENTION_SUPPRESSING_EVENTS
         ):
-            attention = (
-                _detected_attention(
-                    run_dir,
-                    state,
-                    capture_timeout_seconds=prompt_capture_timeout_seconds,
-                )
-                or attention
+            detected_attention = _detected_attention(
+                run_dir,
+                state,
+                capture_timeout_seconds=prompt_capture_timeout_seconds,
             )
+            if detected_attention is not None and (
+                not attention.get("required")
+                or _attention_signature(detected_attention)
+                != _attention_signature(attention)
+            ):
+                attention = detected_attention
         activity_state = _activity_state(state, run_dir, latest_event, attention)
         return cls(
             {
@@ -81,7 +83,7 @@ class RunControlSnapshot(dict[str, Any]):
         )
 
 
-def _attention(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _attention(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for event in reversed(events):
         kind = event.get("kind")
         if kind in {
@@ -108,6 +110,20 @@ def _attention(events: list[dict[str, Any]]) -> dict[str, Any]:
                 ),
             }
     return {"required": False, "reason": None, "prompt": None, "suggested_inputs": []}
+
+
+def _attention_signature(attention: dict[str, Any]) -> tuple[Any, Any, tuple[str, ...]]:
+    suggested_inputs = attention.get("suggested_inputs")
+    return (
+        attention.get("reason"),
+        attention.get("prompt"),
+        tuple(
+            suggested_inputs
+            if isinstance(suggested_inputs, list)
+            and all(isinstance(item, str) for item in suggested_inputs)
+            else []
+        ),
+    )
 
 
 def _detected_attention(
@@ -145,7 +161,7 @@ def _detected_attention(
 def _activity_state(
     state: RunState,
     run_dir: Path,
-    latest_event: dict[str, Any] | None,
+    latest_event: Mapping[str, Any] | None,
     attention: dict[str, Any],
 ) -> str:
     if state["status"] in TERMINAL_STATUSES:
