@@ -26,6 +26,7 @@ INCOMPLETE_RESPONSE_PHRASES = (
     "once it finishes",
     "when it finishes",
 )
+TERMINAL_COMPLETION_MIN_RESPONSE_CHARS = 8
 
 
 def _looks_like_incomplete_response(response: str) -> bool:
@@ -355,9 +356,19 @@ class RunSupervisor:
         if not marker:
             return None
         for text in self._terminal_completion_candidates():
+            response_start = 0
             marker_at = text.find(marker)
-            if marker_at >= 0:
-                return text[: marker_at + len(marker)]
+            while marker_at >= 0:
+                marker_end = marker_at + len(marker)
+                if _marker_is_echoed_task_prompt(text, marker_at):
+                    response_start = marker_end
+                    marker_at = text.find(marker, marker_end)
+                    continue
+                response = text[response_start:marker_end]
+                if not _terminal_completion_response_is_meaningful(response, marker):
+                    marker_at = text.find(marker, marker_end)
+                    continue
+                return response
         return None
 
     def _terminal_completion_candidates(self) -> list[str]:
@@ -381,6 +392,8 @@ class RunSupervisor:
     def _completion_is_stable(self, response: str | None) -> bool:
         marker = str(self.state["completion_marker"])
         if marker and response and marker in response:
+            if not self._expected_file_is_ready():
+                return False
             if response != self.marker_response:
                 self.marker_response = response
                 self.marker_seen_at = time.monotonic()
@@ -396,6 +409,8 @@ class RunSupervisor:
             or self.done_response_seen_at is None
         ):
             return False
+        if not self._expected_file_is_ready():
+            return False
         return time.monotonic() - self.done_response_seen_at >= (
             self.completion_idle_seconds
         )
@@ -407,20 +422,26 @@ class RunSupervisor:
             self._response(),
             str(self.state["completion_marker"]),
         )
+        expected_file_error = self._expected_file_error()
         if self.cancel_path.exists():
             status, error = "canceled", None
         elif return_code not in {None, 0}:
             status = "failed"
-            error = (
-                f"agy exited with code {return_code} after a partial response"
-                if response
-                else f"agy exited with code {return_code} without a response"
-            )
+            if response:
+                error = f"agy exited with code {return_code} after a partial response"
+            else:
+                _, error = self._classify_empty_response(return_code)
+        elif expected_file_error is not None:
+            status = "failed"
+            error = expected_file_error
         elif response and _looks_like_incomplete_response(response):
             status = "failed"
             error = "agy exited before a final response"
         elif response:
             status, error = "completed", None
+        elif self._expected_file_is_ready():
+            status, error = "completed", None
+            response = f"Expected file written: {self.state['expected_file']}"
         else:
             status, error = self._classify_empty_response(return_code)
         self._finish(
@@ -435,23 +456,44 @@ class RunSupervisor:
         self,
         return_code: int | None,
     ) -> tuple[str, str]:
-        if return_code not in {None, 0}:
-            return "failed", f"agy exited with code {return_code} without a response"
         health = runtime.run_provider_health(self.directory)
         if health["status"] in {
             "auth_interaction_required",
+            "auth_unavailable",
             "response_timeout",
         }:
             action = health.get("action", "Inspect the visible terminal.")
+            exit_detail = (
+                f" with code {return_code}"
+                if return_code not in {None, 0}
+                else ""
+            )
             return (
                 "failed",
-                "agy exited without a completed response "
+                f"agy exited{exit_detail} without a completed response "
                 f"because provider health is {health['status']}. {action}",
             )
+        if return_code not in {None, 0}:
+            return "failed", f"agy exited with code {return_code} without a response"
         return "failed", "agy exited without a completed response"
 
     def _stop(self) -> None:
         runtime.stop_run(self.session)
+
+    def _expected_file_is_ready(self) -> bool:
+        return self._expected_file_error() is None
+
+    def _expected_file_error(self) -> str | None:
+        expected_file = self.state.get("expected_file")
+        if not expected_file:
+            return None
+        path = Path(str(expected_file))
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return None
+        except OSError as error:
+            return f"expected file is unavailable: {expected_file} ({error})"
+        return f"expected file was not written or is empty: {expected_file}"
 
     def _finish(
         self,
@@ -498,6 +540,21 @@ def _terminal_event_kind(status: str) -> str:
     if status == "canceled":
         return "run_canceled"
     return "run_failed"
+
+
+def _marker_is_echoed_task_prompt(text: str, marker_at: int) -> bool:
+    previous_line_end = text.rfind("\n", 0, marker_at)
+    if previous_line_end < 0:
+        return False
+    previous_line_start = text.rfind("\n", 0, previous_line_end)
+    previous_line = text[previous_line_start + 1 : previous_line_end].strip()
+    return previous_line == "Completion marker:"
+
+
+def _terminal_completion_response_is_meaningful(response: str, marker: str) -> bool:
+    cleaned = runtime.clean_response(response, marker) or ""
+    cleaned = cleaned.strip()
+    return len(cleaned) >= TERMINAL_COMPLETION_MIN_RESPONSE_CHARS
 
 
 def _read_tail(path: Path, max_bytes: int) -> str:

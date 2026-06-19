@@ -18,9 +18,20 @@ APPROVAL_PATTERNS = [
     r"Continue\?",
     r"Approve .*\?",
 ]
+AUTH_PATTERNS = [
+    r"You are not logged into Antigravity",
+    r"not logged into Antigravity",
+    r"failed to get OAuth token",
+    r"Authentication required",
+    r"authentication timed out",
+    r"Please sign in",
+    r"Sign in to Antigravity",
+    r"Authenticate with Antigravity",
+]
 MAX_SOURCE_CHARS = 20_000
 
 PROMPT_REGEXES = [re.compile(pattern) for pattern in APPROVAL_PATTERNS]
+AUTH_REGEXES = [re.compile(pattern, re.IGNORECASE) for pattern in AUTH_PATTERNS]
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SourceName = Literal["transcript", "terminal_log", "live_pane"]
 
@@ -39,13 +50,15 @@ class PromptCandidate:
     source: SourceName
     prompt: str
     text_fingerprint: str
+    reason: str = "approval_prompt"
+    suggested_inputs: tuple[str, ...] = ("y", "n")
 
     @property
     def dedupe_key(self) -> str:
         digest = hashlib.sha256(
-            f"{self.source}\0{self.prompt}".encode()
+            f"{self.source}\0{self.reason}\0{self.prompt}".encode()
         ).hexdigest()[:16]
-        return f"approval_prompt:{digest}"
+        return f"{self.reason}:{digest}"
 
 
 class PromptDetector:
@@ -145,10 +158,10 @@ class PromptDetector:
             source=candidate.source,
             activity_state="awaiting_user",
             attention={
-                "reason": "approval_prompt",
+                "reason": candidate.reason,
                 "prompt": candidate.prompt,
                 "source": candidate.source,
-                "suggested_inputs": ["y", "n"],
+                "suggested_inputs": list(candidate.suggested_inputs),
             },
             dedupe_key=candidate.dedupe_key,
         )
@@ -209,6 +222,21 @@ def _candidate_from_text(source: SourceName, text: str) -> PromptCandidate | Non
     text = _strip_terminal_controls(text)
     if not text:
         return None
+    auth_matches: list[re.Match[str]] = []
+    for regex in AUTH_REGEXES:
+        auth_matches.extend(regex.finditer(text))
+    if auth_matches:
+        match = max(
+            auth_matches,
+            key=lambda item: (item.end() - item.start(), item.start()),
+        )
+        return PromptCandidate(
+            source=source,
+            prompt=match.group(0),
+            text_fingerprint=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            reason="auth_required",
+            suggested_inputs=(),
+        )
     matches: list[re.Match[str]] = []
     for regex in PROMPT_REGEXES:
         matches.extend(regex.finditer(text))

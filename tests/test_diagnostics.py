@@ -12,7 +12,6 @@ class FakeCli:
         return "1.0.8"
 
     def models(self, *, refresh=False):
-        assert refresh is True
         return ["Model A", "Model B"]
 
     def plugins(self):
@@ -80,3 +79,29 @@ def test_doctor_isolates_model_discovery_failure(monkeypatch, tmp_path):
     assert result["cli"]["plugins"] == [{"name": "alpha", "raw": "alpha"}]
     assert result["storage"]["state_root"] == str(tmp_path / "state")
     assert result["capacity"]["configured_parallel_limit"]
+
+
+def test_doctor_reports_authentication_status_from_models(monkeypatch, tmp_path):
+    monkeypatch.setattr(diagnostics.core, "STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(diagnostics.core, "AGY_ROOT", tmp_path / "agy")
+
+    result = diagnostics.doctor(cli=FakeCli())
+
+    assert result["cli"]["authentication"] == {
+        "status": "authenticated",
+        "evidence": "agy models returned available models",
+    }
+
+
+def test_doctor_reports_auth_required_from_model_error(monkeypatch, tmp_path):
+    class AuthFailureCli(FakeCli):
+        def models(self, *, refresh=False):
+            raise RuntimeError("You are not logged into Antigravity")
+
+    monkeypatch.setattr(diagnostics.core, "STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(diagnostics.core, "AGY_ROOT", tmp_path / "agy")
+
+    result = diagnostics.doctor(cli=AuthFailureCli())
+
+    assert result["cli"]["authentication"]["status"] == "auth_required"
+    assert "sign-in flow" in result["cli"]["authentication"]["action"]

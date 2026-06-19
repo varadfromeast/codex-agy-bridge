@@ -9,9 +9,11 @@ from pydantic import StrictInt
 
 from codex_agy_bridge import diagnostics, orchestration
 from codex_agy_bridge.core import STATE_ROOT, public_state
+from codex_agy_bridge.exceptions import AuthenticationRequiredError
 from codex_agy_bridge.lifecycle import register_server_instance
 
 DEFAULT_MODEL = orchestration.DEFAULT_MODEL
+DEFAULT_WAIT_TIMEOUT_SECONDS = orchestration.DEFAULT_WAIT_TIMEOUT_SECONDS
 
 
 class StrictFastMCP(FastMCP):
@@ -37,7 +39,12 @@ mcp = StrictFastMCP(
         "terminal evidence. agy_run_input sends text only when optional event "
         "or transcript preconditions still match; stale writes are rejected "
         "with fresh context. agy_run_result reads final result metadata or "
-        "bounded chunks. agy_goal manages bridge scheduler goals and targets. "
+        "bounded chunks. agy_start_with_expected_file starts a task Run that "
+        "cannot complete successfully until the requested file exists and is "
+        "non-empty. agy_review_commit and agy_review_branch start typed review "
+        "Runs that write strict JSON artifacts; agy_review_result validates and "
+        "summarizes those artifacts. agy_goal manages bridge scheduler goals and "
+        "targets. "
         "agy_admin handles diagnostics, models, plugins, and changelog. "
         "Antigravity is agentic and the workspace is not a security boundary. "
         "The bridge always enables Antigravity's dangerous permission-skip "
@@ -57,6 +64,7 @@ def create_run(
     additional_directories: list[str] | None = None,
     goal_id: str | None = None,
     target_name: str | None = None,
+    expected_file: str | None = None,
 ) -> dict[str, Any]:
     """Compatibility interface for callers predating the orchestration module."""
     return cast(
@@ -72,6 +80,7 @@ def create_run(
             additional_directories=additional_directories,
             goal_id=goal_id,
             target_name=target_name,
+            expected_file=expected_file,
         ),
     )
 
@@ -117,7 +126,44 @@ def agy_run_start(
                 "human_attachable": True,
             }
         )
-    return public_state(cast(dict[str, Any], orchestration.create_run(**kwargs)))
+    try:
+        return public_state(cast(dict[str, Any], orchestration.create_run(**kwargs)))
+    except AuthenticationRequiredError as error:
+        return cast(dict[str, Any], error.payload)
+
+
+@mcp.tool()
+def agy_start_with_expected_file(
+    prompt: str,
+    workspace: str,
+    expected_file: str,
+    timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start one task Run that cannot complete until expected_file is non-empty."""
+    try:
+        return public_state(
+            cast(
+                dict[str, Any],
+                orchestration.create_run(
+                    prompt=prompt,
+                    workspace=workspace,
+                    timeout_seconds=timeout_seconds,
+                    conversation_id=conversation_id,
+                    dangerously_skip_permissions=dangerously_skip_permissions,
+                    model=model,
+                    sandbox=sandbox,
+                    additional_directories=additional_directories,
+                    expected_file=expected_file,
+                ),
+            )
+        )
+    except AuthenticationRequiredError as error:
+        return cast(dict[str, Any], error.payload)
 
 
 @mcp.tool()
@@ -125,7 +171,7 @@ def agy_run_wait(
     run_ids: list[str],
     condition: str = "any_attention",
     after: dict[str, str] | None = None,
-    timeout_seconds: int = 900,
+    timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Wait for sparse Run events instead of repeatedly polling status."""
     return orchestration.wait(
@@ -133,6 +179,22 @@ def agy_run_wait(
         condition=condition,
         after=after,
         timeout_seconds=timeout_seconds,
+    )
+
+
+@mcp.tool()
+def agy_login(
+    workspace: str | None = None,
+    open_terminal: bool = True,
+    refresh: bool = True,
+    force_new: bool = False,
+) -> dict[str, Any]:
+    """Refresh Antigravity auth state and optionally open one login session."""
+    return orchestration.login(
+        workspace=workspace,
+        open_terminal=open_terminal,
+        refresh=refresh,
+        force_new=force_new,
     )
 
 
@@ -227,6 +289,80 @@ def agy_run_result(
 
 
 @mcp.tool()
+def agy_review_commit(
+    commit: str,
+    issue: str,
+    workspace: str,
+    scope_paths: list[str] | None = None,
+    output_file: str | None = None,
+    timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start a typed review Run for one commit and return immediately."""
+    try:
+        return orchestration.review_commit(
+            commit=commit,
+            issue=issue,
+            workspace=workspace,
+            scope_paths=scope_paths,
+            output_file=output_file,
+            timeout_seconds=timeout_seconds,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+        )
+    except AuthenticationRequiredError as error:
+        return cast(dict[str, Any], error.payload)
+
+
+@mcp.tool()
+def agy_review_branch(
+    issue: str,
+    workspace: str,
+    scope_paths: list[str] | None = None,
+    base_ref: str | None = None,
+    include_untracked: bool = True,
+    output_file: str | None = None,
+    timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start a typed review Run for branch and working-tree changes."""
+    try:
+        return orchestration.review_branch(
+            issue=issue,
+            workspace=workspace,
+            scope_paths=scope_paths,
+            base_ref=base_ref,
+            include_untracked=include_untracked,
+            output_file=output_file,
+            timeout_seconds=timeout_seconds,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+        )
+    except AuthenticationRequiredError as error:
+        return cast(dict[str, Any], error.payload)
+
+
+@mcp.tool()
+def agy_review_result(run_id: str) -> dict[str, Any]:
+    """Validate and summarize the artifact from a typed review Run."""
+    return orchestration.review_result(run_id)
+
+
+@mcp.tool()
 def agy_goal(
     action: str,
     objective: str | None = None,
@@ -265,20 +401,23 @@ def agy_goal(
             raise ValueError(
                 "goal_id, target_name, and prompt are required for start_target"
             )
-        return public_state(
-            cast(
-                dict[str, Any],
-                orchestration.start_goal_target(
-                    goal_id=goal_id,
-                    target_name=target_name,
-                    prompt=prompt,
-                    timeout_seconds=timeout_seconds,
-                    dangerously_skip_permissions=dangerously_skip_permissions,
-                    sandbox=sandbox,
-                    additional_directories=additional_directories,
-                ),
+        try:
+            return public_state(
+                cast(
+                    dict[str, Any],
+                    orchestration.start_goal_target(
+                        goal_id=goal_id,
+                        target_name=target_name,
+                        prompt=prompt,
+                        timeout_seconds=timeout_seconds,
+                        dangerously_skip_permissions=dangerously_skip_permissions,
+                        sandbox=sandbox,
+                        additional_directories=additional_directories,
+                    ),
+                )
             )
-        )
+        except AuthenticationRequiredError as error:
+            return cast(dict[str, Any], error.payload)
     if action == "status":
         if goal_id is None:
             raise ValueError("goal_id is required for status")

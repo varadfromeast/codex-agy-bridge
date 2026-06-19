@@ -218,6 +218,29 @@ def test_detector_treats_approval_menu_after_prompt_as_active(tmp_path):
     assert event.attention["prompt"] == "Do you want to proceed?"
 
 
+def test_detector_emits_auth_required_attention_from_terminal_log(tmp_path):
+    clock = FakeClock()
+    (tmp_path / "terminal.log").write_text(
+        "You are not logged into Antigravity\n",
+        encoding="utf-8",
+    )
+    detector = PromptDetector(tmp_path, clock=clock)
+
+    detector.inspect()
+    clock.advance(1.0)
+    event = detector.inspect()
+
+    assert event is not None
+    assert event.kind == "needs_attention"
+    assert event.source == "terminal_log"
+    assert event.attention == {
+        "reason": "auth_required",
+        "prompt": "You are not logged into Antigravity",
+        "source": "terminal_log",
+        "suggested_inputs": [],
+    }
+
+
 def test_terminal_capture_pane_uses_timeout_and_structured_errors(monkeypatch):
     calls = []
 
@@ -260,4 +283,17 @@ def test_approval_patterns_are_explicit_and_deduped():
         r"Proceed\? \[y/N\]",
         r"Continue\?",
         r"Approve .*\?",
+    ]
+
+
+def test_auth_patterns_are_explicit_and_deduped():
+    assert prompt_detector.AUTH_PATTERNS == [
+        r"You are not logged into Antigravity",
+        r"not logged into Antigravity",
+        r"failed to get OAuth token",
+        r"Authentication required",
+        r"authentication timed out",
+        r"Please sign in",
+        r"Sign in to Antigravity",
+        r"Authenticate with Antigravity",
     ]

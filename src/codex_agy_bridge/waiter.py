@@ -53,6 +53,7 @@ ATTENTION_EVENTS = {
 }
 TERMINAL_EVENTS = {"run_completed", "run_failed", "run_canceled"}
 ATTENTION_STATE_FILE = "attention.state.json"
+DEFAULT_WAIT_TIMEOUT_SECONDS = 86_400
 
 
 def wait_for_runs(
@@ -62,7 +63,7 @@ def wait_for_runs(
     load_state: Callable[[str], RunState] | None = None,
     condition: WaitCondition = "any_attention",
     after: dict[str, str] | None = None,
-    timeout_seconds: float = 900,
+    timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Block until selected runs produce events matching ``condition``."""
     if not run_dirs:
@@ -188,7 +189,7 @@ def _observe_current_prompts(
             payload["category"] = event.attention.get("reason", "approval_prompt")
             payload["severity"] = "action_required"
             payload["observed"].update(event.attention)
-            payload["observed"]["suggested_inputs"] = ["y", "n"]
+            payload["observed"].setdefault("suggested_inputs", ["y", "n"])
         appended = session_events.append_event(detector.run_dir, event.kind, payload)
         if event.kind == "needs_attention":
             _write_attention_state(detector.run_dir, appended)

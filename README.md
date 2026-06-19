@@ -32,9 +32,27 @@ Check the required commands:
 ```bash
 codex --version
 agy --version
+agy models
 uvx --version
 tmux -V
 ```
+
+### Day 0 Authentication
+
+`agy --version` only proves the binary exists. Before adding the MCP server,
+run `agy models`; if Antigravity asks you to sign in or reports that you are
+not logged in, start a visible session and complete the browser/login flow:
+
+```bash
+agy --prompt-interactive "Authenticate Antigravity and then exit."
+agy models
+```
+
+After `agy models` succeeds, install or restart the MCP server. If a bridge run
+still hits auth, `agy_run_start` returns `status="auth_required"` and opens a
+visible `agy` authentication session by default. Complete sign-in there, then
+start a fresh run. You can also use `agy_run_observe(view="terminal")` or
+`agy_admin(action="doctor")` to inspect the auth-required status.
 
 Install from PyPI with the Codex CLI:
 
@@ -94,10 +112,12 @@ command -v agy
 command -v uvx
 command -v tmux
 agy --version
+agy models
 ```
 
 2. If anything is missing, ask before installing it.
-3. If `agy` is present, make sure the user has authenticated it locally.
+3. If `agy models` reports an auth error, help the user complete the Day 0
+   authentication flow above before adding the MCP server.
 4. Then run:
 
 ```bash

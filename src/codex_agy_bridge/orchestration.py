@@ -13,6 +13,9 @@ from codex_agy_bridge._orchestrator import (
     DEFAULT_MODEL as DEFAULT_MODEL,
 )
 from codex_agy_bridge._orchestrator import (
+    DEFAULT_WAIT_TIMEOUT_SECONDS as DEFAULT_WAIT_TIMEOUT_SECONDS,
+)
+from codex_agy_bridge._orchestrator import (
     RunnerOrchestrator,
 )
 from codex_agy_bridge.core import (
@@ -125,6 +128,7 @@ def create_run(
     human_attachable: bool = True,
     goal_id: str | None = None,
     target_name: str | None = None,
+    expected_file: str | None = None,
 ) -> RunState:
     """Start a new asynchronous Antigravity conversation or reuse duplicate.
 
@@ -159,6 +163,7 @@ def create_run(
         human_attachable=human_attachable,
         goal_id=goal_id,
         target_name=target_name,
+        expected_file=expected_file,
     )
 
 
@@ -264,12 +269,79 @@ def result_read(
     )
 
 
+def review_commit(
+    *,
+    commit: str,
+    issue: str,
+    workspace: str,
+    scope_paths: list[str] | None = None,
+    output_file: str | None = None,
+    timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start a typed review Run for a single commit."""
+    return _orchestrator.review_commit(
+        commit=commit,
+        issue=issue,
+        workspace=workspace,
+        scope_paths=scope_paths,
+        output_file=output_file,
+        timeout_seconds=timeout_seconds,
+        conversation_id=conversation_id,
+        dangerously_skip_permissions=dangerously_skip_permissions,
+        model=model,
+        sandbox=sandbox,
+        additional_directories=additional_directories,
+    )
+
+
+def review_branch(
+    *,
+    issue: str,
+    workspace: str,
+    scope_paths: list[str] | None = None,
+    base_ref: str | None = None,
+    include_untracked: bool = True,
+    output_file: str | None = None,
+    timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start a typed review Run for current branch and working tree work."""
+    return _orchestrator.review_branch(
+        issue=issue,
+        workspace=workspace,
+        scope_paths=scope_paths,
+        base_ref=base_ref,
+        include_untracked=include_untracked,
+        output_file=output_file,
+        timeout_seconds=timeout_seconds,
+        conversation_id=conversation_id,
+        dangerously_skip_permissions=dangerously_skip_permissions,
+        model=model,
+        sandbox=sandbox,
+        additional_directories=additional_directories,
+    )
+
+
+def review_result(run_id: str) -> dict[str, Any]:
+    """Read, validate, and summarize a typed review artifact."""
+    return _orchestrator.review_result(run_id)
+
+
 def wait(
     run_ids: list[str],
     *,
     condition: str = "any_attention",
     after: dict[str, str] | None = None,
-    timeout_seconds: int = 900,
+    timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Block until selected runs produce compact notification events."""
     return _orchestrator.wait(
@@ -277,6 +349,22 @@ def wait(
         condition=condition,  # type: ignore[arg-type]
         after=after,
         timeout_seconds=timeout_seconds,
+    )
+
+
+def login(
+    *,
+    workspace: str | None = None,
+    open_terminal: bool = True,
+    refresh: bool = True,
+    force_new: bool = False,
+) -> dict[str, Any]:
+    """Refresh Antigravity auth state and optionally open one login session."""
+    return _orchestrator.login(
+        workspace=workspace,
+        open_terminal=open_terminal,
+        refresh=refresh,
+        force_new=force_new,
     )
 
 

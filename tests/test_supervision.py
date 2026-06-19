@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from codex_agy_bridge import interactive_input, runner, session_events
-from codex_agy_bridge.supervision import RunSupervisor
+from codex_agy_bridge.supervision import RunSupervisor, _marker_is_echoed_task_prompt
 
 
 class FakeClock:
@@ -225,6 +225,41 @@ def test_supervisor_classifies_nonzero_cli_exit(monkeypatch, tmp_path):
     assert events[-1]["kind"] == "run_failed"
     assert events[-1]["status"] == "failed"
 
+
+def test_supervisor_classifies_nonzero_auth_exit_from_terminal_log(
+    monkeypatch,
+    tmp_path,
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+    }
+    updates = []
+    (tmp_path / "agy.exit-code").write_text("1\n", encoding="utf-8")
+    (tmp_path / "terminal.log").write_text(
+        "You are not logged into Antigravity\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+
+    result = RunSupervisor("run-1")._finish_after_exit()
+
+    assert result == 1
+    assert updates[-1]["return_code"] == 1
+    assert "provider health is auth_interaction_required" in updates[-1]["error"]
+    assert "sign-in flow" in updates[-1]["error"]
+    assert session_events.read_events(tmp_path)[-1]["kind"] == "run_failed"
+
+
 def test_supervisor_classifies_nonzero_exit_with_partial_response_as_failed(
     monkeypatch, tmp_path
 ):
@@ -351,6 +386,212 @@ def test_supervisor_completes_when_marker_only_appears_in_terminal(
         "Final answer from the visible pane."
     )
     assert session_events.read_events(tmp_path)[-1]["kind"] == "run_completed"
+
+
+def test_supervisor_does_not_complete_active_run_from_tiny_terminal_marker(
+    monkeypatch,
+    tmp_path,
+):
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "write review.md",
+        "tmux_session": "agy-run-1",
+        "artifact_dir": str(artifact_dir),
+    }
+    updates = []
+    active = [True, False]
+    (tmp_path / "terminal.log").write_text("m\nDONE_MARKER\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(runner, "run_active", lambda _session: active.pop(0))
+    monkeypatch.setattr(
+        runner,
+        "stop_run",
+        lambda _session: pytest.fail("must not stop active TUI on tiny marker"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.supervision.RunSupervisor._observe_conversation",
+        lambda _self: None,
+    )
+
+    supervisor = RunSupervisor("run-1")
+    supervisor.session = "agy-run-1"
+
+    assert supervisor._monitor_until_exit() is None
+    assert updates == []
+    assert not (tmp_path / "final-result.txt").exists()
+
+
+def test_supervisor_requires_expected_file_before_marker_completion(
+    monkeypatch,
+    tmp_path,
+):
+    expected_file = tmp_path / "review.md"
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "write review.md",
+        "expected_file": str(expected_file),
+    }
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert not supervisor._completion_is_stable("Final response\nDONE_MARKER")
+
+    expected_file.write_text("review body\n", encoding="utf-8")
+
+    assert supervisor._completion_is_stable("Final response\nDONE_MARKER")
+
+
+def test_supervisor_fails_successful_exit_when_expected_file_missing(
+    monkeypatch,
+    tmp_path,
+):
+    expected_file = tmp_path / "review.md"
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "write review.md",
+        "expected_file": str(expected_file),
+    }
+    updates = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+
+    result = RunSupervisor("run-1")._finish_after_exit()
+
+    assert result == 1
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["error"] == (
+        f"expected file was not written or is empty: {expected_file}"
+    )
+    assert not (tmp_path / "final-result.txt").exists()
+
+
+def test_supervisor_completes_successful_exit_when_expected_file_exists(
+    monkeypatch,
+    tmp_path,
+):
+    expected_file = tmp_path / "review.md"
+    expected_file.write_text("review body\n", encoding="utf-8")
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "write review.md",
+        "expected_file": str(expected_file),
+    }
+    updates = []
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "update_state",
+        lambda _run_id, **changes: updates.append(changes),
+    )
+
+    result = RunSupervisor("run-1")._finish_after_exit()
+
+    assert result == 0
+    assert updates[-1]["status"] == "completed"
+    assert updates[-1]["result"] == f"Expected file written: {expected_file}"
+    assert (tmp_path / "final-result.txt").read_text(encoding="utf-8") == (
+        f"Expected file written: {expected_file}"
+    )
+
+
+def test_supervisor_ignores_completion_marker_in_echoed_task_prompt(
+    monkeypatch,
+    tmp_path,
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    (tmp_path / "terminal.log").write_text(
+        "\n".join(
+            [
+                "Task:",
+                "write a tiny review file",
+                "",
+                "Completion marker:",
+                "DONE_MARKER",
+                "Currently signed in as user@example.com",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert supervisor._terminal_completion_response() is None
+
+
+def test_supervisor_uses_later_terminal_marker_after_echoed_task_prompt(
+    monkeypatch,
+    tmp_path,
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    (tmp_path / "terminal.log").write_text(
+        "\n".join(
+            [
+                "Task:",
+                "write a tiny review file",
+                "",
+                "Completion marker:",
+                "DONE_MARKER",
+                "Currently signed in as user@example.com",
+                "Final answer from the visible pane.",
+                "DONE_MARKER",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert supervisor._terminal_completion_response() == (
+        "\nCurrently signed in as user@example.com\n"
+        "Final answer from the visible pane.\nDONE_MARKER"
+    )
+
+
+def test_marker_echo_detection_ignores_marker_on_first_line():
+    assert _marker_is_echoed_task_prompt("DONE_MARKER\n", 0) is False
 
 
 def test_supervisor_treats_stable_done_response_as_completed_without_marker(

@@ -378,6 +378,45 @@ def test_run_provider_health_reports_response_timeout_action(tmp_path):
     assert "agy_run_input" in health["action"]
 
 
+def test_run_provider_health_reads_terminal_and_stderr_auth_signals(tmp_path):
+    (tmp_path / "terminal.log").write_text(
+        "You are not logged into Antigravity\n",
+        encoding="utf-8",
+    )
+
+    health = core.run_provider_health(tmp_path)
+
+    assert health["status"] == "auth_interaction_required"
+    assert "complete the Antigravity sign-in flow" in health["action"]
+
+    (tmp_path / "terminal.log").unlink()
+    (tmp_path / "agy.stderr.log").write_text(
+        "failed to get OAuth token\n",
+        encoding="utf-8",
+    )
+
+    assert core.run_provider_health(tmp_path)["status"] == (
+        "auth_interaction_required"
+    )
+
+
+def test_run_provider_health_prefers_current_auth_failure_over_stale_success(
+    tmp_path,
+):
+    (tmp_path / "agy.log").write_text(
+        "applyAuthResult: consumer\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "terminal.log").write_text(
+        "Error: Please sign in to view available models.\n",
+        encoding="utf-8",
+    )
+
+    assert core.run_provider_health(tmp_path)["status"] == (
+        "auth_interaction_required"
+    )
+
+
 def test_validate_identifier_rejects_shell_metacharacters():
     for value in ("run one", "run;one", "run$one", "run:one", "`run`"):
         with pytest.raises(ValueError):

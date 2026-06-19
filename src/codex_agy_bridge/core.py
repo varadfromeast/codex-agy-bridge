@@ -192,17 +192,39 @@ def provider_health(log_path: Path) -> dict[str, Any]:
 
 
 def run_provider_health(directory: Path) -> dict[str, Any]:
-    """Classify provider health using both Antigravity logs and print output."""
-    health = provider_health(directory / "agy.log")
-    if health["status"] != "unknown":
-        return health
-    stdout_path = directory / "agy.stdout.log"
-    text = _read_tail(stdout_path, 20_000).lower()
-    stdout_health = _classify_provider_health_text(
-        text,
-        include_response_timeout=True,
+    """Classify provider health using all bounded run terminal evidence."""
+    observations: list[dict[str, Any]] = [provider_health(directory / "agy.log")]
+    for name in (
+        "terminal.log",
+        "terminal-progress.log",
+        "agy.stdout.log",
+        "agy.stderr.log",
+    ):
+        text = _read_tail(directory / name, 20_000).lower()
+        status = _classify_provider_health_text(
+            text,
+            include_response_timeout=True,
+        )
+        observations.append(status)
+    for status in observations:
+        if status["status"] not in {"unknown", "authenticated"}:
+            return status
+    for status in observations:
+        if status["status"] == "authenticated":
+            return status
+    return {"status": "unknown"}
+
+
+def classify_provider_health_text(
+    text: str,
+    *,
+    include_response_timeout: bool = False,
+) -> dict[str, Any]:
+    """Classify provider health from already-captured diagnostic text."""
+    return _classify_provider_health_text(
+        text.lower(),
+        include_response_timeout=include_response_timeout,
     )
-    return stdout_health if stdout_health["status"] != "unknown" else health
 
 
 def _classify_provider_health_text(
@@ -222,10 +244,14 @@ def _classify_provider_health_text(
                 "failed to get oauth token",
                 "oauth token",
                 "not logged into antigravity",
+                "please sign in",
+                "authentication required",
+                "authentication timed out",
+                "launch the cli without arguments to sign in",
             ),
             (
-                "Open the visible terminal or send `yes` to the run's tmux "
-                "session, then retry if authentication does not resume."
+                "Open the visible terminal for this run, complete the "
+                "Antigravity sign-in flow, then start a new run."
             ),
         ),
         ("auth_unavailable", ("you are not logged into antigravity",), None),

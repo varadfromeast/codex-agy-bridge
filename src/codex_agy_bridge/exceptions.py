@@ -23,3 +23,11 @@ class ConcurrencyLimitExceeded(BridgeError, RuntimeError):
     """Raised when the parallel run limit is reached."""
 
     pass
+
+
+class AuthenticationRequiredError(BridgeError, RuntimeError):
+    """Raised when Antigravity must be authenticated before starting a run."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        super().__init__(str(payload.get("warning", "Antigravity auth required")))
