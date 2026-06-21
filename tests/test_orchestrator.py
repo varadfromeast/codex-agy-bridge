@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from codex_agy_bridge.orchestration import ProcessManager, RunnerOrchestrator
+from codex_agy_bridge.store import MemoryRunStore
 
 
 class MockProcess:
@@ -88,6 +89,33 @@ def test_orchestrator_create_run_spawns_process(tmp_path, monkeypatch):
         or "python" in pm.spawned[0]["args"][0]
         or "runner" in pm.spawned[0]["args"]
     )
+
+
+def test_wait_caps_single_mcp_call_to_keep_server_responsive(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS", "0")
+    store = MemoryRunStore()
+    store.save_run(
+        "run-long",
+        {
+            "run_id": "run-long",
+            "status": "running",
+            "error": None,
+        },
+    )
+    orch = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+
+    result = orch.wait(["run-long"], timeout_seconds=1200)
+
+    assert result["matched"] is False
+    assert result["wait"] == {
+        "requested_timeout_seconds": 1200,
+        "effective_timeout_seconds": 0,
+        "capped_by": "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
+        "next": (
+            "Call agy_run_wait again with the returned latest_event_id cursors, "
+            "or call agy_run_observe/agy_review_result for a non-blocking snapshot."
+        ),
+    }
 
 
 def test_orchestrator_rejects_blank_conversation_id_before_spawn(tmp_path):

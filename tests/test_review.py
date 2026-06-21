@@ -213,6 +213,43 @@ def test_review_result_returns_artifact_location_for_malformed_json(tmp_path):
     assert "parse_error" in result["artifact"]
 
 
+def test_review_result_reads_valid_artifact_even_if_run_state_is_still_active(tmp_path):
+    output_file = tmp_path / "review.json"
+    output_file.write_text(
+        json.dumps(
+            {
+                "schema": "agy.review.v1",
+                "verdict": "accepted",
+                "findings": [],
+                "blockers": [],
+                "files_inspected": ["src/codex_agy_bridge/review.py"],
+                "commands_run": ["pytest tests/test_review.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = MemoryRunStore()
+    store.save_run(
+        "run-review",
+        {
+            "run_id": "run-review",
+            "status": "running",
+            "task_kind": "review_commit",
+            "review_schema": "agy.review.v1",
+            "review_output_file": str(output_file),
+            "error": None,
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+
+    result = orchestrator.review_result("run-review")
+
+    assert result["status"] == "completed"
+    assert result["summary"]["verdict"] == "accepted"
+    assert result["artifact"]["valid"] is True
+    assert result["run"]["status"] == "running"
+
+
 def test_review_result_reports_active_review_run_without_validation_failure(tmp_path):
     output_file = tmp_path / "review.json"
     store = MemoryRunStore()

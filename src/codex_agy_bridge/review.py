@@ -127,21 +127,21 @@ def result(state: RunState, *, provider_health: dict[str, Any]) -> dict[str, Any
         }
     path = Path(path_text)
     artifact = _artifact_base(path)
-    if state["status"] in {"queued", "running", "cancel_requested"}:
-        return {
-            "status": state["status"],
-            "summary": None,
-            "review": None,
-            "artifact": {
-                **artifact,
-                "exists": path.is_file(),
-                "total_bytes": path.stat().st_size if path.is_file() else None,
-                "valid": False,
-            },
-            "validation_errors": [],
-            "run": _run_metadata(state, provider_health),
-        }
+    active = state["status"] in {"queued", "running", "cancel_requested"}
     if not path.is_file():
+        if active:
+            return {
+                "status": state["status"],
+                "summary": None,
+                "review": None,
+                "artifact": {
+                    **artifact,
+                    "exists": False,
+                    "valid": False,
+                },
+                "validation_errors": [],
+                "run": _run_metadata(state, provider_health),
+            }
         errors = ["review artifact was not written"]
         return {
             "status": "failed_validation",
@@ -162,6 +162,19 @@ def result(state: RunState, *, provider_health: dict[str, Any]) -> dict[str, Any
         review = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         parse_error = f"{error.msg} at line {error.lineno} column {error.colno}"
+        if active:
+            return {
+                "status": state["status"],
+                "summary": None,
+                "review": None,
+                "artifact": {
+                    **artifact,
+                    "valid": False,
+                    "parse_error": parse_error,
+                },
+                "validation_errors": [],
+                "run": _run_metadata(state, provider_health),
+            }
         return {
             "status": "failed_validation",
             "summary": None,
@@ -176,6 +189,19 @@ def result(state: RunState, *, provider_health: dict[str, Any]) -> dict[str, Any
         }
     errors = validate_artifact(review)
     if errors:
+        if active:
+            return {
+                "status": state["status"],
+                "summary": None,
+                "review": review if isinstance(review, dict) else None,
+                "artifact": {
+                    **artifact,
+                    "valid": False,
+                    "validation_errors": errors,
+                },
+                "validation_errors": [],
+                "run": _run_metadata(state, provider_health),
+            }
         return {
             "status": "failed_validation",
             "summary": None,

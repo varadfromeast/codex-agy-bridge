@@ -229,6 +229,7 @@ shared objective and bounded parallelism.
 | `AGY_BRIDGE_AGY_ROOT` | `~/.gemini/antigravity-cli` | Antigravity conversations and trajectories |
 | `AGY_BRIDGE_MAX_PARALLEL` | `50` | Global concurrent-run limit |
 | `AGY_BRIDGE_COMPLETION_STABILITY_SECONDS` | `150` | Time a final marker must remain stable |
+| `AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS` | `55` | Max seconds a single `agy_run_wait` MCP call blocks before returning a snapshot so gateways do not time out |
 
 Run state survives MCP server restarts under
 `~/.local/state/codex-agy-bridge/`.

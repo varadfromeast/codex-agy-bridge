@@ -55,11 +55,30 @@ DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 50
 JANITOR_INTERVAL_SECONDS = 60
 DEFAULT_WAIT_TIMEOUT_SECONDS = 86_400
+DEFAULT_MCP_WAIT_SLICE_SECONDS = 55
 CANCEL_TERM_GRACE_SECONDS = 0.25
 CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
 )
 LOGGER = logging.getLogger(__name__)
+
+
+def _mcp_wait_slice_seconds() -> int:
+    """Return the longest single MCP wait call should block.
+
+    Runs are durable and continue in background; keeping each wait under common
+    MCP gateway request deadlines prevents stale timed-out calls from wedging the
+    stdio server while still allowing clients to loop on cursors.
+    """
+    configured = os.environ.get(
+        "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
+        str(DEFAULT_MCP_WAIT_SLICE_SECONDS),
+    )
+    try:
+        value = int(configured)
+    except ValueError:
+        return DEFAULT_MCP_WAIT_SLICE_SECONDS
+    return max(0, value)
 
 
 def _global_max_parallel() -> int:
@@ -942,19 +961,33 @@ class RunnerOrchestrator:
         """Block until selected runs have durable events worth reporting."""
         if not run_ids:
             raise ValueError("run_ids must not be empty")
-        timeout_seconds = max(0, int(timeout_seconds))
+        requested_timeout_seconds = max(0, int(timeout_seconds))
+        wait_slice_seconds = _mcp_wait_slice_seconds()
+        effective_timeout_seconds = min(requested_timeout_seconds, wait_slice_seconds)
         run_dirs = {}
         for run_id in run_ids:
             self.load_state(run_id)
             run_dirs[run_id] = self.run_dir(run_id)
-        return waiter.wait_for_runs(
+        result = waiter.wait_for_runs(
             run_dirs,
             state_root=self.state_root,
             load_state=self.load_state,
             condition=condition,
             after=after,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=effective_timeout_seconds,
         )
+        if effective_timeout_seconds != requested_timeout_seconds:
+            result["wait"] = {
+                "requested_timeout_seconds": requested_timeout_seconds,
+                "effective_timeout_seconds": effective_timeout_seconds,
+                "capped_by": "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
+                "next": (
+                    "Call agy_run_wait again with the returned latest_event_id "
+                    "cursors, or call agy_run_observe/agy_review_result for a "
+                    "non-blocking snapshot."
+                ),
+            }
+        return result
 
     def _discard_result_artifact(self, run_id: str) -> None:
         run_results.discard_artifact(self.run_dir(run_id))
