@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -18,9 +19,11 @@ from typing import Any, cast
 from filelock import FileLock
 
 from codex_agy_bridge import (
+    auth_flow,
     core,
     interactive_input,
     labels,
+    review,
     run_control_snapshot,
     run_input_delivery,
     run_results,
@@ -30,7 +33,11 @@ from codex_agy_bridge import (
     waiter,
 )
 from codex_agy_bridge.cli import AntigravityCli
-from codex_agy_bridge.exceptions import ConcurrencyLimitExceeded, RunNotFoundError
+from codex_agy_bridge.exceptions import (
+    AuthenticationRequiredError,
+    ConcurrencyLimitExceeded,
+    RunNotFoundError,
+)
 from codex_agy_bridge.execution import ExecutionSession, TmuxSession
 from codex_agy_bridge.process import LocalProcessManager, ProcessManager
 from codex_agy_bridge.run_request import (
@@ -47,12 +54,31 @@ from codex_agy_bridge.store import DiskRunStore, RunStore
 DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 50
 JANITOR_INTERVAL_SECONDS = 60
-WAIT_TIMEOUT_MAX_SECONDS = 3600
+DEFAULT_WAIT_TIMEOUT_SECONDS = 86_400
+DEFAULT_MCP_WAIT_SLICE_SECONDS = 55
 CANCEL_TERM_GRACE_SECONDS = 0.25
 CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
 )
 LOGGER = logging.getLogger(__name__)
+
+
+def _mcp_wait_slice_seconds() -> int:
+    """Return the longest single MCP wait call should block.
+
+    Runs are durable and continue in background; keeping each wait under common
+    MCP gateway request deadlines prevents stale timed-out calls from wedging the
+    stdio server while still allowing clients to loop on cursors.
+    """
+    configured = os.environ.get(
+        "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
+        str(DEFAULT_MCP_WAIT_SLICE_SECONDS),
+    )
+    try:
+        value = int(configured)
+    except ValueError:
+        return DEFAULT_MCP_WAIT_SLICE_SECONDS
+    return max(0, value)
 
 
 def _global_max_parallel() -> int:
@@ -98,6 +124,23 @@ def _run_age_seconds(state: RunState) -> float | None:
     except ValueError:
         return None
     return max(0.0, time.time() - started.timestamp())
+
+
+def _authentication_status(cli: Any) -> dict[str, Any]:
+    probe = getattr(cli, "authentication_status", None)
+    if not callable(probe):
+        return {
+            "status": "unknown",
+            "evidence": "cli adapter does not expose authentication_status",
+        }
+    try:
+        status = probe()
+    except Exception as error:
+        return {
+            "status": "unknown",
+            "evidence": f"{type(error).__name__}: {error}",
+        }
+    return status if isinstance(status, dict) else {"status": "unknown"}
 
 
 # _call_with_optional_state_root removed (audit #3).
@@ -150,6 +193,8 @@ class RunnerOrchestrator:
         self._store = store
         self.session_factory = session_factory or default_session_factory
         self.cli = cli or AntigravityCli()
+        self._authentication_status: dict[str, Any] | None = None
+        self._authentication_lock = threading.Lock()
 
     @property
     def state_root(self) -> Path:
@@ -344,6 +389,7 @@ class RunnerOrchestrator:
         human_attachable: bool = True,
         goal_id: str | None = None,
         target_name: str | None = None,
+        expected_file: str | None = None,
     ) -> RunState:
         """Start a new asynchronous Antigravity conversation or reuse duplicate.
 
@@ -385,7 +431,28 @@ class RunnerOrchestrator:
             goal_id=goal_id,
             target_name=target_name,
             cli=self.cli,
+            expected_file=expected_file,
         )
+        auth_status = self.authentication_status()
+        if auth_status["status"] == "auth_required":
+            auth_session = auth_flow.start_visible_auth_session(
+                cli=self.cli,
+                state_root=self.state_root,
+                workspace=request.workspace,
+            )
+            raise AuthenticationRequiredError(
+                {
+                    "status": "auth_required",
+                    "warning": (
+                        "Antigravity CLI is not authenticated. Authenticate in "
+                        "the visible agy CLI session, then retry this run."
+                    ),
+                    "provider_health": auth_status,
+                    "auth_session": auth_session,
+                    "login_tool": "agy_login",
+                    "retry": "After sign-in completes, call agy_run_start again.",
+                }
+            )
         self.maybe_run_janitor()
         from codex_agy_bridge import orchestration
 
@@ -789,30 +856,138 @@ class RunnerOrchestrator:
             max_bytes=max_bytes,
         )
 
+    def review_commit(
+        self,
+        *,
+        commit: str,
+        issue: str,
+        workspace: str,
+        scope_paths: list[str] | None = None,
+        output_file: str | None = None,
+        timeout_seconds: int = 900,
+        conversation_id: str | None = None,
+        dangerously_skip_permissions: bool = True,
+        model: str | None = DEFAULT_MODEL,
+        sandbox: bool = False,
+        additional_directories: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Start a typed review Run for a single commit."""
+        normalized_output = review.normalize_output_file(workspace, output_file)
+        prompt = review.commit_prompt(
+            commit=commit,
+            issue=issue,
+            scope_paths=scope_paths,
+            output_file=normalized_output,
+        )
+        state = self.create_run(
+            prompt=prompt,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+            expected_file=normalized_output,
+        )
+        state = self.update_state(
+            state["run_id"],
+            task_kind="review_commit",
+            review_schema=review.REVIEW_SCHEMA,
+            review_output_file=normalized_output,
+        )
+        return review.launch_response(state)
+
+    def review_branch(
+        self,
+        *,
+        issue: str,
+        workspace: str,
+        scope_paths: list[str] | None = None,
+        base_ref: str | None = None,
+        include_untracked: bool = True,
+        output_file: str | None = None,
+        timeout_seconds: int = 900,
+        conversation_id: str | None = None,
+        dangerously_skip_permissions: bool = True,
+        model: str | None = DEFAULT_MODEL,
+        sandbox: bool = False,
+        additional_directories: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Start a typed review Run for current branch and working tree work."""
+        normalized_output = review.normalize_output_file(workspace, output_file)
+        prompt = review.branch_prompt(
+            issue=issue,
+            scope_paths=scope_paths,
+            base_ref=base_ref,
+            include_untracked=include_untracked,
+            output_file=normalized_output,
+        )
+        state = self.create_run(
+            prompt=prompt,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+            expected_file=normalized_output,
+        )
+        state = self.update_state(
+            state["run_id"],
+            task_kind="review_branch",
+            review_schema=review.REVIEW_SCHEMA,
+            review_output_file=normalized_output,
+        )
+        return review.launch_response(state)
+
+    def review_result(self, run_id: str) -> dict[str, Any]:
+        """Read, validate, and summarize a typed review artifact."""
+        state = self.load_state(run_id)
+        return review.result(
+            state,
+            provider_health=core.run_provider_health(self.run_dir(run_id)),
+        )
+
     def wait(
         self,
         run_ids: list[str],
         *,
         condition: waiter.WaitCondition = "any_attention",
         after: dict[str, str] | None = None,
-        timeout_seconds: int = 900,
+        timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         """Block until selected runs have durable events worth reporting."""
         if not run_ids:
             raise ValueError("run_ids must not be empty")
-        timeout_seconds = min(max(0, int(timeout_seconds)), WAIT_TIMEOUT_MAX_SECONDS)
+        requested_timeout_seconds = max(0, int(timeout_seconds))
+        wait_slice_seconds = _mcp_wait_slice_seconds()
+        effective_timeout_seconds = min(requested_timeout_seconds, wait_slice_seconds)
         run_dirs = {}
         for run_id in run_ids:
             self.load_state(run_id)
             run_dirs[run_id] = self.run_dir(run_id)
-        return waiter.wait_for_runs(
+        result = waiter.wait_for_runs(
             run_dirs,
             state_root=self.state_root,
             load_state=self.load_state,
             condition=condition,
             after=after,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=effective_timeout_seconds,
         )
+        if effective_timeout_seconds != requested_timeout_seconds:
+            result["wait"] = {
+                "requested_timeout_seconds": requested_timeout_seconds,
+                "effective_timeout_seconds": effective_timeout_seconds,
+                "capped_by": "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
+                "next": (
+                    "Call agy_run_wait again with the returned latest_event_id "
+                    "cursors, or call agy_run_observe/agy_review_result for a "
+                    "non-blocking snapshot."
+                ),
+            }
+        return result
 
     def _discard_result_artifact(self, run_id: str) -> None:
         run_results.discard_artifact(self.run_dir(run_id))
@@ -1047,6 +1222,57 @@ class RunnerOrchestrator:
             goal["updated_at"] = core.utc_now()
             self.store.save_goal(goal_id, goal)
             return state
+
+    def authentication_status(self, *, refresh: bool = False) -> dict[str, Any]:
+        with self._authentication_lock:
+            if refresh or self._authentication_status is None:
+                self._authentication_status = _authentication_status(self.cli)
+            if self._authentication_status.get("status") == "authenticated":
+                closed = auth_flow.close_visible_auth_sessions(self.state_root)
+                if closed:
+                    self._authentication_status = {
+                        **self._authentication_status,
+                        "closed_auth_sessions": closed,
+                    }
+            return dict(self._authentication_status)
+
+    def login(
+        self,
+        *,
+        workspace: str | None = None,
+        open_terminal: bool = True,
+        refresh: bool = True,
+        force_new: bool = False,
+    ) -> dict[str, Any]:
+        """Refresh Antigravity auth state and optionally open one login session."""
+        auth_status = self.authentication_status(refresh=refresh)
+        if auth_status["status"] != "auth_required":
+            return {
+                "status": auth_status["status"],
+                "provider_health": auth_status,
+                "auth_session": None,
+                "run_start_allowed": auth_status["status"] == "authenticated",
+            }
+        auth_session = None
+        if open_terminal:
+            root = Path(workspace or Path.cwd()).expanduser().resolve()
+            auth_session = auth_flow.start_visible_auth_session(
+                cli=self.cli,
+                state_root=self.state_root,
+                workspace=root if root.is_dir() else Path.cwd(),
+                force_new=force_new,
+            )
+        return {
+            "status": "auth_required",
+            "warning": (
+                "Antigravity CLI is not authenticated. Authenticate in the "
+                "visible agy CLI session, then retry the blocked run."
+            ),
+            "provider_health": auth_status,
+            "auth_session": auth_session,
+            "run_start_allowed": False,
+            "retry": "After sign-in completes, call agy_login(refresh=true).",
+        }
 
     def goal_status(self, goal_id: str) -> dict[str, Any]:
         """Aggregate statuses of all targets in a goal.

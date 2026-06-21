@@ -101,6 +101,10 @@ def doctor(
                 if capabilities is not None
                 else None
             ),
+            "authentication": _authentication_report(
+                available_models=available_models,
+                errors=cli_errors,
+            ),
             "errors": cli_errors,
         },
         "tmux": {
@@ -140,6 +144,37 @@ def _probe(
     except Exception as error:
         errors[name] = f"{type(error).__name__}: {error}"
         return None
+
+
+def _authentication_report(
+    *,
+    available_models: Any,
+    errors: dict[str, str],
+) -> dict[str, str]:
+    if isinstance(available_models, list) and available_models:
+        return {
+            "status": "authenticated",
+            "evidence": "agy models returned available models",
+        }
+    health = core.classify_provider_health_text("\n".join(errors.values()))
+    if health["status"] in {"auth_interaction_required", "auth_unavailable"}:
+        return {
+            "status": "auth_required",
+            "evidence": "agy diagnostics reported an authentication error",
+            "action": health.get(
+                "action",
+                "Run a visible Antigravity CLI session and complete sign-in.",
+            ),
+        }
+    if errors.get("models"):
+        return {
+            "status": "unknown",
+            "evidence": "agy models failed without a recognized auth signal",
+        }
+    return {
+        "status": "unknown",
+        "evidence": "agy models did not report available models",
+    }
 
 
 def _package_version() -> str:

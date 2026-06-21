@@ -41,6 +41,7 @@ class RunRequest:
     human_attachable: bool
     goal_id: str | None
     target_name: str | None
+    expected_file: str | None
     request_key: str
 
     @classmethod
@@ -63,6 +64,7 @@ class RunRequest:
         goal_id: str | None,
         target_name: str | None,
         cli: CliValidator,
+        expected_file: str | None = None,
     ) -> RunRequest:
         if "\x00" in prompt:
             raise ValueError("prompt must not contain NUL bytes")
@@ -98,6 +100,10 @@ class RunRequest:
             additional_directories,
             workspace=root,
         )
+        normalized_expected_file = normalize_expected_file(
+            expected_file,
+            workspace=root,
+        )
         needs_visible_cli = (
             execution_mode == "interactive" or execution_surface == "foreground"
         )
@@ -131,6 +137,7 @@ class RunRequest:
             human_attachable=human_attachable,
             goal_id=goal_id,
             target_name=target_name,
+            expected_file=normalized_expected_file,
         )
         return cls(
             prompt=prompt,
@@ -147,6 +154,7 @@ class RunRequest:
             human_attachable=human_attachable,
             goal_id=goal_id,
             target_name=target_name,
+            expected_file=normalized_expected_file,
             request_key=request_key,
         )
 
@@ -168,6 +176,7 @@ class RunRequest:
                 effective_prompt,
                 completion_marker=marker,
                 artifact_dir=artifact_dir,
+                expected_file=self.expected_file,
             )
         return {
             "run_id": run_id,
@@ -176,6 +185,7 @@ class RunRequest:
             "updated_at": now,
             "workspace": str(self.workspace),
             "artifact_dir": artifact_dir or "",
+            "expected_file": self.expected_file,
             "prompt": effective_prompt,
             "prompt_preview": self.prompt[:240],
             "completion_marker": marker,
@@ -231,6 +241,26 @@ def normalize_additional_directories(
     return tuple(sorted(normalized))
 
 
+def normalize_expected_file(value: str | None, *, workspace: Path) -> str | None:
+    if value is None:
+        return None
+    if "\x00" in value:
+        raise ValueError("expected_file must not contain NUL bytes")
+    if not value.strip():
+        raise ValueError("expected_file must not be empty")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = workspace / path
+    path = path.resolve()
+    try:
+        path.relative_to(workspace)
+    except ValueError as error:
+        raise ValueError("expected_file must resolve inside the workspace") from error
+    if len(os.fsencode(path)) > 4096:
+        raise ValueError("expected_file path exceeds 4096 bytes")
+    return str(path)
+
+
 def _request_key(
     *,
     prompt: str,
@@ -247,6 +277,7 @@ def _request_key(
     human_attachable: bool = True,
     goal_id: str | None,
     target_name: str | None,
+    expected_file: str | None = None,
 ) -> str:
     payload = {
         "prompt": prompt.rstrip(),
@@ -263,6 +294,7 @@ def _request_key(
         "human_attachable": human_attachable,
         "goal_id": goal_id,
         "target_name": target_name,
+        "expected_file": expected_file,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()

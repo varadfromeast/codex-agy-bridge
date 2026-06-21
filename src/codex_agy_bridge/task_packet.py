@@ -8,6 +8,7 @@ def format_task_packet(
     *,
     completion_marker: str,
     artifact_dir: str | None = None,
+    expected_file: str | None = None,
 ) -> str:
     """Return the lean task envelope sent to Antigravity task sessions."""
     task = prompt.rstrip()
@@ -25,6 +26,17 @@ def format_task_packet(
         lines.extend(
             [
                 f"- Write reports or handoff files under: {artifact_dir}",
+                (
+                    "- If the task asks for files, verify they exist and are "
+                    "non-empty before finishing."
+                ),
+            ]
+        )
+    if expected_file:
+        lines.extend(
+            [
+                f"- Required output file: {expected_file}",
+                "- Finish only after that exact file exists and is non-empty.",
             ]
         )
     lines.extend(
@@ -40,6 +52,7 @@ def format_task_packet(
         [
             "",
             "Completion marker:",
+            "Print this marker only after all requested files and edits are complete:",
             completion_marker,
         ]
     )

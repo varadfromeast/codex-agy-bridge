@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from codex_agy_bridge import core
+
 
 @dataclass(frozen=True)
 class CliCapabilities:
@@ -83,6 +85,35 @@ class AntigravityCli:
                 self._models = self._nonempty_lines(self._run("models"))
                 self._models_observed_at = now
             return list(self._models)
+
+    def authentication_status(self) -> dict[str, Any]:
+        """Return whether ``agy models`` proves the CLI is signed in."""
+        completed, output = self._execute("models")
+        if completed.returncode == 0:
+            models = self._nonempty_lines(output)
+            if models:
+                return {
+                    "status": "authenticated",
+                    "evidence": "agy models returned available models",
+                }
+            return {
+                "status": "unknown",
+                "evidence": "agy models succeeded without listing models",
+            }
+        health = core.classify_provider_health_text(output)
+        if health["status"] in {"auth_interaction_required", "auth_unavailable"}:
+            return {
+                "status": "auth_required",
+                "evidence": output.strip(),
+                "action": health.get(
+                    "action",
+                    "Launch the Antigravity CLI without arguments and sign in.",
+                ),
+            }
+        return {
+            "status": "unknown",
+            "evidence": output.strip(),
+        }
 
     def plugins(self) -> list[dict[str, str]]:
         lines = self._nonempty_lines(self._run("plugin", "list"))

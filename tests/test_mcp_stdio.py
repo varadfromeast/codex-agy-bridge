@@ -98,11 +98,16 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     assert "agy_admin" in initialized.instructions
     assert {tool.name for tool in tools.tools} == {
         "agy_run_start",
+        "agy_start_with_expected_file",
         "agy_run_wait",
         "agy_run_observe",
         "agy_run_input",
         "agy_run_cancel",
         "agy_run_result",
+        "agy_review_commit",
+        "agy_review_branch",
+        "agy_review_result",
+        "agy_login",
         "agy_goal",
         "agy_admin",
     }
@@ -135,3 +140,19 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
     )
     admin = next(tool for tool in tools.tools if tool.name == "agy_admin")
     assert "diagnostics" in admin.description
+    review_commit = next(
+        tool for tool in tools.tools if tool.name == "agy_review_commit"
+    )
+    assert "commit" in review_commit.inputSchema["properties"]
+    assert "typed review" in review_commit.description
+    review_branch = next(
+        tool for tool in tools.tools if tool.name == "agy_review_branch"
+    )
+    assert (
+        review_branch.inputSchema["properties"]["include_untracked"]["default"]
+        is True
+    )
+    review_result = next(
+        tool for tool in tools.tools if tool.name == "agy_review_result"
+    )
+    assert list(review_result.inputSchema["properties"]) == ["run_id"]

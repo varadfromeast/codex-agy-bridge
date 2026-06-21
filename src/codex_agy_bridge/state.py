@@ -27,6 +27,7 @@ class RunState(TypedDict, total=False):
     updated_at: str
     workspace: str
     artifact_dir: str
+    expected_file: str | None
     prompt: str
     prompt_preview: str
     completion_marker: str
@@ -59,6 +60,9 @@ class RunState(TypedDict, total=False):
     interactive_prompt_in_flight: bool
     notification_resource_uri: str
     wait_tool: str
+    task_kind: str
+    review_schema: str
+    review_output_file: str
 
 
 class GoalState(TypedDict):

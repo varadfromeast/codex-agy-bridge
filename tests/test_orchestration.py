@@ -3,11 +3,19 @@ from __future__ import annotations
 import json
 import signal
 import threading
+import time
 
 import pytest
 
-from codex_agy_bridge import core, interactive_input, orchestration, session_events
+from codex_agy_bridge import (
+    auth_flow,
+    core,
+    interactive_input,
+    orchestration,
+    session_events,
+)
 from codex_agy_bridge._orchestrator import RunnerOrchestrator
+from codex_agy_bridge.exceptions import AuthenticationRequiredError
 from codex_agy_bridge.execution import MockSession
 from codex_agy_bridge.process import ProcessManager
 from codex_agy_bridge.store import MemoryRunStore
@@ -149,6 +157,245 @@ def test_create_run_returns_notification_metadata(monkeypatch, tmp_path):
         f"agy-run://{state['run_id']}/notifications"
     )
     assert state["wait_tool"] == "agy_run_wait"
+
+
+def test_create_run_opens_visible_auth_session_when_cli_requires_sign_in(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    opened = []
+
+    class AuthRequiredCli:
+        executable = "/usr/local/bin/agy"
+
+        def capabilities(self):
+            return type(
+                "Capabilities",
+                (),
+                {
+                    "sandbox": True,
+                    "additional_directories": True,
+                    "interactive": True,
+                },
+            )()
+
+        def authentication_status(self):
+            return {
+                "status": "auth_required",
+                "evidence": "Please sign in",
+                "action": "Launch the CLI without arguments to sign in.",
+            }
+
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.auth_flow.start_visible_auth_session",
+        lambda **kwargs: opened.append(kwargs)
+        or {"tmux_session": "agy-auth-test", "opened": True, "reused": False},
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        cli=AuthRequiredCli(),
+    )
+
+    with pytest.raises(AuthenticationRequiredError) as error:
+        orchestrator.create_run(
+            prompt="work",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+        )
+
+    assert error.value.payload["status"] == "auth_required"
+    assert "Authenticate in the visible agy CLI session" in (
+        error.value.payload["warning"]
+    )
+    assert error.value.payload["auth_session"] == {
+        "tmux_session": "agy-auth-test",
+        "opened": True,
+        "reused": False,
+    }
+    assert opened[0]["workspace"] == workspace
+
+
+def test_repeated_auth_required_starts_reuse_one_visible_auth_session(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sessions_alive: set[str] = set()
+    launches = []
+    attaches = []
+
+    class AuthRequiredCli:
+        executable = "/usr/local/bin/agy"
+
+        def capabilities(self):
+            return type(
+                "Capabilities",
+                (),
+                {
+                    "sandbox": True,
+                    "additional_directories": True,
+                    "interactive": True,
+                },
+            )()
+
+        def authentication_status(self):
+            return {
+                "status": "auth_required",
+                "evidence": "Please sign in",
+                "action": "Launch the CLI without arguments to sign in.",
+            }
+
+    def launch(session, *_args, **_kwargs):
+        launches.append(session)
+        sessions_alive.add(session)
+
+    monkeypatch.setattr("codex_agy_bridge.auth_flow.terminal.launch", launch)
+    monkeypatch.setattr(
+        "codex_agy_bridge.auth_flow.terminal.attach",
+        lambda session, **_kwargs: attaches.append(session),
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.auth_flow.terminal.alive",
+        lambda session: session in sessions_alive,
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        cli=AuthRequiredCli(),
+    )
+
+    with pytest.raises(AuthenticationRequiredError) as first:
+        orchestrator.create_run(
+            prompt="work 1",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+        )
+    with pytest.raises(AuthenticationRequiredError) as second:
+        orchestrator.create_run(
+            prompt="work 2",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+        )
+
+    assert len(launches) == 1
+    assert attaches == launches
+    assert first.value.payload["auth_session"]["opened"] is True
+    assert first.value.payload["auth_session"]["reused"] is False
+    assert second.value.payload["auth_session"]["opened"] is False
+    assert second.value.payload["auth_session"]["reused"] is True
+    assert second.value.payload["auth_session"]["tmux_session"] == launches[0]
+    assert second.value.payload["login_tool"] == "agy_login"
+
+
+def test_concurrent_auth_session_starts_reuse_one_visible_session(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sessions_alive: set[str] = set()
+    launches = []
+    results = []
+    first_launch_started = threading.Event()
+
+    class Cli:
+        executable = "/usr/local/bin/agy"
+
+    def launch(session, *_args, **_kwargs):
+        launches.append(session)
+        first_launch_started.set()
+        time.sleep(0.1)
+        sessions_alive.add(session)
+
+    monkeypatch.setattr("codex_agy_bridge.auth_flow.terminal.launch", launch)
+    monkeypatch.setattr(
+        "codex_agy_bridge.auth_flow.terminal.attach",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.auth_flow.terminal.alive",
+        lambda session: session in sessions_alive,
+    )
+
+    def start():
+        results.append(
+            auth_flow.start_visible_auth_session(
+                cli=Cli(),
+                state_root=tmp_path / "state",
+                workspace=workspace,
+            )
+        )
+
+    first = threading.Thread(target=start)
+    first.start()
+    assert first_launch_started.wait(timeout=2)
+    second = threading.Thread(target=start)
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert len(launches) == 1
+    assert len(results) == 2
+    assert {result["reused"] for result in results} == {False, True}
+    assert {result["tmux_session"] for result in results} == set(launches)
+
+
+def test_login_refresh_closes_auth_session_after_sign_in(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sessions_alive: set[str] = set()
+    stopped = []
+    status_calls = 0
+
+    class EventuallyAuthenticatedCli:
+        executable = "/usr/local/bin/agy"
+
+        def authentication_status(self):
+            nonlocal status_calls
+            status_calls += 1
+            if status_calls == 1:
+                return {
+                    "status": "auth_required",
+                    "evidence": "Please sign in",
+                    "action": "Launch the CLI without arguments to sign in.",
+                }
+            return {"status": "authenticated"}
+
+    def launch(session, *_args, **_kwargs):
+        sessions_alive.add(session)
+
+    def stop(session):
+        stopped.append(session)
+        sessions_alive.discard(session)
+
+    monkeypatch.setattr("codex_agy_bridge.auth_flow.terminal.launch", launch)
+    monkeypatch.setattr(
+        "codex_agy_bridge.auth_flow.terminal.attach",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "codex_agy_bridge.auth_flow.terminal.alive",
+        lambda session: session in sessions_alive,
+    )
+    monkeypatch.setattr("codex_agy_bridge.auth_flow.terminal.stop", stop)
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        cli=EventuallyAuthenticatedCli(),
+    )
+
+    first = orchestrator.login(workspace=str(workspace))
+    second = orchestrator.login(workspace=str(workspace), refresh=True)
+
+    assert first["status"] == "auth_required"
+    assert first["auth_session"]["opened"] is True
+    assert second["status"] == "authenticated"
+    assert second["run_start_allowed"] is True
+    assert stopped == [first["auth_session"]["tmux_session"]]
 
 
 @pytest.mark.parametrize(
@@ -324,6 +571,33 @@ def test_wait_returns_compact_event_updates(monkeypatch, tmp_path):
     assert result["matched"] is True
     assert result["events"] == [event]
     assert result["runs"]["run-1"]["status"] == "completed"
+
+
+def test_wait_caps_requested_timeout_to_mcp_safe_slice(monkeypatch, tmp_path):
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    mem_store = MemoryRunStore()
+    mem_store.runs["run-1"] = {
+        "run_id": "run-1",
+        "status": "running",
+    }
+    observed = {}
+    orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
+
+    def wait_for_runs(_run_dirs, **kwargs):
+        observed.update(kwargs)
+        return {"matched": False, "events": [], "runs": {}}
+
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.waiter.wait_for_runs",
+        wait_for_runs,
+    )
+
+    result = orch.wait(["run-1"], timeout_seconds=86_400)
+
+    assert result["matched"] is False
+    assert observed["timeout_seconds"] == 55
+    assert result["wait"]["requested_timeout_seconds"] == 86_400
+    assert result["wait"]["effective_timeout_seconds"] == 55
 
 
 def test_observe_merges_run_events_transcript_cursor_and_provider_health(
@@ -1131,9 +1405,26 @@ def test_concurrent_identical_starts_reserve_queued_run(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     process_manager = ConcurrentProcessManager()
+
+    class AuthenticatedCli:
+        def authentication_status(self):
+            return {"status": "authenticated"}
+
+        def capabilities(self):
+            return type(
+                "Capabilities",
+                (),
+                {
+                    "sandbox": True,
+                    "additional_directories": True,
+                    "interactive": True,
+                },
+            )()
+
     orchestrator = RunnerOrchestrator(
         state_root=tmp_path / "state",
         process_manager=process_manager,
+        cli=AuthenticatedCli(),
     )
     monkeypatch.setenv("AGY_BRIDGE_MAX_PARALLEL", "1")
     results = []

@@ -66,6 +66,7 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
     assert request.workspace == workspace.resolve()
     assert request.additional_directories == (str(extra.resolve()),)
     assert request.dangerously_skip_permissions is True
+    assert request.expected_file is None
     assert request.request_key
     assert state["request_key"] == request.request_key
     assert state["session_label"] == "agy-work-run-1"
@@ -77,11 +78,80 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
     assert "\nAcceptance:\n" in state["prompt"]
     assert "\nConstraints:\n" in state["prompt"]
     assert "Write reports or handoff files under:" in state["prompt"]
+    assert "verify they exist and are non-empty before finishing" in state["prompt"]
     assert state["artifact_dir"].endswith("/state/runs/run-1/artifacts")
     assert "\nExpected output:\n" in state["prompt"]
-    assert "\nCompletion marker:\nDONE" in state["prompt"]
+    assert "Print this marker only after all requested files" in state["prompt"]
     assert state["prompt"].endswith("DONE")
     assert state["previous_conversation_id"] == "previous"
+
+
+def test_run_request_normalizes_expected_file_inside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    request = RunRequest.prepare(
+        prompt="write review",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+        dangerously_skip_permissions=True,
+        model=None,
+        default_model="default",
+        sandbox=False,
+        additional_directories=[],
+        execution_mode="print",
+        agent_mode="task",
+        execution_surface="foreground",
+        human_attachable=True,
+        goal_id=None,
+        target_name=None,
+        cli=FakeCli(),
+        expected_file="reports/review.md",
+    )
+    state = request.initial_state(
+        run_id="run-1",
+        now="now",
+        previous_conversation_id=None,
+        session_label="agy-work-run-1",
+        tmux_session="agy-run-1",
+        completion_marker="DONE",
+        artifact_dir=str(tmp_path / "state" / "runs" / "run-1" / "artifacts"),
+    )
+
+    expected = workspace / "reports" / "review.md"
+    assert request.expected_file == str(expected.resolve())
+    assert state["expected_file"] == str(expected.resolve())
+    assert f"Required output file: {expected.resolve()}" in state["prompt"]
+    assert "Finish only after that exact file exists and is non-empty" in (
+        state["prompt"]
+    )
+
+
+def test_run_request_rejects_expected_file_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="expected_file"):
+        RunRequest.prepare(
+            prompt="write review",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            dangerously_skip_permissions=True,
+            model=None,
+            default_model="default",
+            sandbox=False,
+            additional_directories=[],
+            execution_mode="print",
+            agent_mode="task",
+            execution_surface="foreground",
+            human_attachable=True,
+            goal_id=None,
+            target_name=None,
+            cli=FakeCli(),
+            expected_file="../review.md",
+        )
 
 
 def test_run_request_rejects_disabled_dangerous_permission_skip(tmp_path):

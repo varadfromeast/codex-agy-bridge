@@ -45,6 +45,39 @@ def test_cli_discovers_version_models_plugins_and_capabilities(monkeypatch):
     assert cli.capabilities().interactive
 
 
+def test_cli_authentication_status_reports_authenticated(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.subprocess.run",
+        lambda _command, **_kwargs: completed("Model A\n"),
+    )
+    cli = AntigravityCli(executable="agy")
+
+    assert cli.authentication_status() == {
+        "status": "authenticated",
+        "evidence": "agy models returned available models",
+    }
+
+
+def test_cli_authentication_status_reports_sign_in_required(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.subprocess.run",
+        lambda _command, **_kwargs: completed(
+            stderr=(
+                "Error: Please sign in to view available models. "
+                "Launch the CLI without arguments to sign in.\n"
+            ),
+            returncode=1,
+        ),
+    )
+    cli = AntigravityCli(executable="agy")
+
+    result = cli.authentication_status()
+
+    assert result["status"] == "auth_required"
+    assert "Please sign in" in result["evidence"]
+    assert "sign-in flow" in result["action"]
+
+
 def test_cli_rejects_requested_unsupported_capability(monkeypatch):
     monkeypatch.setattr(
         "codex_agy_bridge.cli.subprocess.run",
