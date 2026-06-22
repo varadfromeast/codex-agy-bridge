@@ -43,7 +43,10 @@ def format_task_packet(
         [
             "",
             "Expected output:",
-            "- A concise final response with changed files and verification.",
+            (
+                "- A full and final response to Codex with changed files, "
+                "verification, and any important caveats."
+            ),
         ]
     )
     if artifact_dir:
@@ -52,7 +55,11 @@ def format_task_packet(
         [
             "",
             "Completion marker:",
-            "Print this marker only after all requested files and edits are complete:",
+            (
+                "Strongly suggested: first write the full and final response "
+                "Codex should show the user, then print this marker as the "
+                "last line only after all requested files and edits are complete:"
+            ),
             completion_marker,
         ]
     )

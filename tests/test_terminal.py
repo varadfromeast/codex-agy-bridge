@@ -9,6 +9,22 @@ import pytest
 from codex_agy_bridge import terminal
 
 
+def test_clean_text_applies_carriage_return_redraws():
+    assert (
+        terminal.clean_text("Gener\rGenerating\rGenerating.\nDone\n")
+        == "Generating.\nDone\n"
+    )
+
+
+def test_clean_text_compacts_spinner_log_noise():
+    noisy = (
+        "\n\n⣾  Generating\n\n⣷  Generating.\n\n"
+        "Use /help to see all commands.\n\n⣯  Working...\n\n"
+    )
+
+    assert terminal.clean_text(noisy) == "Use /help to see all commands.\n"
+
+
 def test_terminal_launch_owns_tmux_setup(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(
