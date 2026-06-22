@@ -15,14 +15,69 @@ DEFAULT_TMUX_TIMEOUT_SECONDS = 2.0
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 OSC_ESCAPE_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+SPINNER_STATUS_RE = re.compile(r"^\s*[\u2800-\u28ff](?:\s+[^\n]{0,120})?\s*$")
 
 
 def clean_text(text: str) -> str:
-    """Return terminal text without ANSI/control sequences."""
+    """Return terminal text without ANSI/control sequences.
+
+    Terminal logs can contain carriage-return driven redraws from spinners and
+    progress UIs. Treat bare ``\r`` like a terminal would: redraw the current
+    line instead of expanding every frame into a new log line.
+    """
     text = OSC_ESCAPE_RE.sub("", text)
     text = ANSI_ESCAPE_RE.sub("", text)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return CONTROL_RE.sub("", text)
+    text = _apply_terminal_line_controls(text)
+    text = CONTROL_RE.sub("", text)
+    return _compact_terminal_noise(text)
+
+
+def _compact_terminal_noise(text: str) -> str:
+    """Drop high-frequency spinner frames and collapse excess blank lines."""
+    compacted: list[str] = []
+    blank_pending = False
+    for line in text.split("\n"):
+        if SPINNER_STATUS_RE.match(line):
+            blank_pending = True
+            continue
+        if not line.strip():
+            blank_pending = True
+            continue
+        if blank_pending and compacted:
+            compacted.append("")
+        compacted.append(line)
+        blank_pending = False
+    if blank_pending and compacted:
+        compacted.append("")
+    return "\n".join(compacted)
+
+
+def _apply_terminal_line_controls(text: str) -> str:
+    """Apply simple terminal line editing controls to plain text."""
+    lines: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\r":
+            if index + 1 < len(text) and text[index + 1] == "\n":
+                lines.append("".join(current))
+                current = []
+                index += 2
+                continue
+            current = []
+        elif char == "\n":
+            lines.append("".join(current))
+            current = []
+        elif char == "\b":
+            if current:
+                current.pop()
+        else:
+            current.append(char)
+        index += 1
+    if current or text.endswith(("\n", "\r")):
+        lines.append("".join(current))
+    return "\n".join(lines)
 
 
 class TmuxCommandError(RuntimeError):
