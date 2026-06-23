@@ -33,9 +33,10 @@ mcp = StrictFastMCP(
     "codex-agy-bridge",
     instructions=(
         "Use the lean tools by default. agy_run_start starts or continues a "
-        "foreground Antigravity run and returns a run_id. agy_run_wait blocks "
-        "for sparse lifecycle, attention, terminal, and progress-stalled "
-        "events. agy_run_observe reads status, transcript, merged state, or raw "
+        "foreground Antigravity run and returns a run_id. agy_run_wait is a "
+        "short-polling helper for sparse lifecycle, attention, terminal, and "
+        "progress-stalled events; do not treat MCP wait disconnects as Run "
+        "failures. agy_run_observe reads status, transcript, merged state, or raw "
         "terminal evidence. agy_run_input sends text only when optional event "
         "or transcript preconditions still match; stale writes are rejected "
         "with fresh context. agy_run_result reads final result metadata or "

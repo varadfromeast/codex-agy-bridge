@@ -595,9 +595,9 @@ def test_wait_caps_requested_timeout_to_mcp_safe_slice(monkeypatch, tmp_path):
     result = orch.wait(["run-1"], timeout_seconds=86_400)
 
     assert result["matched"] is False
-    assert observed["timeout_seconds"] == 475
+    assert observed["timeout_seconds"] == 120
     assert result["wait"]["requested_timeout_seconds"] == 86_400
-    assert result["wait"]["effective_timeout_seconds"] == 475
+    assert result["wait"]["effective_timeout_seconds"] == 120
 
 
 def test_observe_merges_run_events_transcript_cursor_and_provider_health(

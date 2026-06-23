@@ -55,7 +55,7 @@ DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 50
 JANITOR_INTERVAL_SECONDS = 60
 DEFAULT_WAIT_TIMEOUT_SECONDS = 86_400
-DEFAULT_MCP_WAIT_SLICE_SECONDS = 475
+DEFAULT_MCP_WAIT_SLICE_SECONDS = 120
 CANCEL_TERM_GRACE_SECONDS = 0.25
 CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
@@ -66,9 +66,9 @@ LOGGER = logging.getLogger(__name__)
 def _mcp_wait_slice_seconds() -> int:
     """Return the longest single MCP wait call should block.
 
-    Runs are durable and continue in background; keeping each wait under common
-    MCP gateway request deadlines prevents stale timed-out calls from wedging the
-    stdio server while still allowing clients to loop on cursors.
+    Runs are durable and continue in background. Keep each individual MCP wait
+    bounded so long review/task waits can be observed by repeated waits or
+    non-blocking result/status polls without implying the underlying Run failed.
     """
     configured = os.environ.get(
         "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",

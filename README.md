@@ -89,7 +89,7 @@ executable.
   and the run can still be observed later by `run_id`.
 - **Goal orchestration:** create a goal, start named targets with bounded
   parallelism, and inspect the whole batch as one coordinated effort.
-- **Sparse wake events:** `agy_run_wait` blocks on lifecycle, attention,
+- **Sparse wake events:** `agy_run_wait` short-polls lifecycle, attention,
   progress, and terminal events without transcript-polling spam.
 - **Guarded input:** `agy_run_input` can reject stale writes when event or
   transcript cursors changed after the caller observed the run.
@@ -203,7 +203,7 @@ vision, see [docs/MCP_VISION.md](docs/MCP_VISION.md).
 | Tool | Purpose |
 | --- | --- |
 | `agy_run_start` | Start, continue, or open an interactive foreground run |
-| `agy_run_wait` | Block until selected runs emit sparse wake events |
+| `agy_run_wait` | Short-poll until selected runs emit sparse wake events |
 | `agy_run_observe` | Read full, status, transcript, or raw terminal views |
 | `agy_run_input` | Send input with optional event/transcript preconditions |
 | `agy_run_cancel` | Cancel one active run |
@@ -229,7 +229,7 @@ shared objective and bounded parallelism.
 | `AGY_BRIDGE_AGY_ROOT` | `~/.gemini/antigravity-cli` | Antigravity conversations and trajectories |
 | `AGY_BRIDGE_MAX_PARALLEL` | `50` | Global concurrent-run limit |
 | `AGY_BRIDGE_COMPLETION_STABILITY_SECONDS` | `150` | Time a final marker must remain stable |
-| `AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS` | `55` | Max seconds a single `agy_run_wait` MCP call blocks before returning a snapshot so gateways do not time out |
+| `AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS` | `120` | Max seconds a single `agy_run_wait` MCP call blocks before returning a snapshot so gateways do not time out |
 
 Run state survives MCP server restarts under
 `~/.local/state/codex-agy-bridge/`.

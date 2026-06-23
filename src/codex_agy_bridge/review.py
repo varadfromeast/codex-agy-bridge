@@ -54,8 +54,15 @@ def launch_response(state: RunState) -> dict[str, Any]:
         "output_file": state.get("review_output_file"),
         "expected_artifact": dict(REVIEW_ARTIFACT),
         "next": {
-            "wait_tool": "agy_run_wait",
             "result_tool": "agy_review_result",
+            "wait_tool": "agy_run_wait",
+            "max_wait_seconds": 120,
+            "poll_interval_seconds": 60,
+            "advice": (
+                "Poll agy_review_result or the output_file directly for long "
+                "reviews; MCP wait/request timeouts only mean the observer "
+                "disconnected, not that the review failed."
+            ),
         },
     }
 

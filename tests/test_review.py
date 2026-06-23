@@ -66,8 +66,15 @@ def test_review_commit_starts_tagged_expected_file_run(tmp_path):
         "schema": "agy.review.v1",
     }
     assert result["next"] == {
-        "wait_tool": "agy_run_wait",
         "result_tool": "agy_review_result",
+        "wait_tool": "agy_run_wait",
+        "max_wait_seconds": 120,
+        "poll_interval_seconds": 60,
+        "advice": (
+            "Poll agy_review_result or the output_file directly for long reviews; "
+            "MCP wait/request timeouts only mean the observer disconnected, not "
+            "that the review failed."
+        ),
     }
     assert state["task_kind"] == "review_commit"
     assert state["review_schema"] == "agy.review.v1"

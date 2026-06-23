@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from codex_agy_bridge._orchestrator import _mcp_wait_slice_seconds
 from codex_agy_bridge.orchestration import ProcessManager, RunnerOrchestrator
 from codex_agy_bridge.store import MemoryRunStore
 
@@ -89,6 +90,12 @@ def test_orchestrator_create_run_spawns_process(tmp_path, monkeypatch):
         or "python" in pm.spawned[0]["args"][0]
         or "runner" in pm.spawned[0]["args"]
     )
+
+
+def test_default_mcp_wait_slice_stays_bounded_for_gateway_deadlines(monkeypatch):
+    monkeypatch.delenv("AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS", raising=False)
+
+    assert _mcp_wait_slice_seconds() <= 120
 
 
 def test_wait_caps_single_mcp_call_to_keep_server_responsive(tmp_path, monkeypatch):
