@@ -658,7 +658,18 @@ class RunnerOrchestrator:
                 "terminal_tail_available": snapshot["terminal_tail_available"],
                 "artifact_dir": state.get("artifact_dir"),
                 "notification_resource_uri": state.get("notification_resource_uri"),
-                "wait_tool": state.get("wait_tool", "agy_run_wait"),
+                "wait_tool": state.get("wait_tool", "codex_agy_bridge_agy_run_wait"),
+                "local_wait_tool": state.get("local_wait_tool", "agy_run_wait"),
+                "wait_call": state.get(
+                    "wait_call",
+                    {
+                        "tool": "codex_agy_bridge_agy_run_wait",
+                        "arguments": {
+                            "run_ids": [run_id],
+                            "condition": "any_attention",
+                        },
+                    },
+                ),
                 "latest_step": latest,
                 "provider_health": core.run_provider_health(self.run_dir(run_id)),
                 "interactive_queue": interactive_queue,

@@ -217,6 +217,14 @@ Typical flow:
 agy_run_start -> agy_run_wait -> agy_run_observe -> agy_run_result
 ```
 
+In Codex MCP, tools may be exposed with the server prefix, for example
+`codex_agy_bridge_agy_run_wait`. Run responses include exact `wait_call`
+arguments; note that `agy_run_wait` always takes `run_ids: ["..."]`, even for a
+single run. Supported wait conditions are `any_attention`, `any_terminal`,
+`all_terminal`, `any_event`, and aliases `attention`, `terminal`, `finished`,
+`finish`, `complete`, `completed`, `result`, `all_finished`, `all_complete`, and
+`all_completed`.
+
 Use `agy_goal` when the harness should split work into named targets with a
 shared objective and bounded parallelism.
 

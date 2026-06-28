@@ -7,7 +7,7 @@ from typing import Any, cast
 from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
 
-from codex_agy_bridge import diagnostics, orchestration
+from codex_agy_bridge import diagnostics, orchestration, waiter
 from codex_agy_bridge.core import STATE_ROOT, public_state
 from codex_agy_bridge.exceptions import AuthenticationRequiredError
 from codex_agy_bridge.lifecycle import register_server_instance
@@ -35,15 +35,22 @@ mcp = StrictFastMCP(
         "Use the lean tools by default. agy_run_start starts or continues a "
         "foreground Antigravity run and returns a run_id. agy_run_wait is a "
         "short-polling helper for sparse lifecycle, attention, terminal, and "
-        "progress-stalled events; do not treat MCP wait disconnects as Run "
-        "failures. agy_run_observe reads status, transcript, merged state, or raw "
-        "terminal evidence. agy_run_input sends text only when optional event "
-        "or transcript preconditions still match; stale writes are rejected "
-        "with fresh context. agy_run_result reads final result metadata or "
-        "bounded chunks. agy_start_with_expected_file starts a task Run that "
-        "cannot complete successfully until the requested file exists and is "
+        "progress-stalled events; its run_ids argument is always a list and "
+        "condition is one of any_attention, any_terminal, all_terminal, or "
+        "any_event (plus documented aliases); do not treat MCP wait disconnects "
+        "as Run failures. agy_run_observe reads status, transcript, merged "
+        "state, or raw terminal evidence. agy_run_input sends text only when "
+        "optional event or transcript preconditions still match; stale writes "
+        "are rejected with fresh context. agy_run_result reads final result "
+        "metadata or bounded chunks. agy_start_with_expected_file starts a task "
+        "Run that cannot complete successfully until the requested file exists and is "
         "non-empty. agy_review_commit and agy_review_branch start typed review "
-        "Runs that write strict JSON artifacts; agy_review_result validates and "
+        "Runs that write strict JSON artifacts; keep review prompts focused and "
+        "use narrow scope_paths when possible. Prefer agy_review_result after "
+        "completion. Wait for terminal completion with agy_run_wait rather than "
+        "repeatedly observing verbose state, and avoid frequent "
+        "agy_run_observe calls with include_terminal_tail=true unless debugging "
+        "the bridge. agy_review_result validates and "
         "summarizes those artifacts. agy_goal manages bridge scheduler goals and "
         "targets. "
         "agy_admin handles diagnostics, models, plugins, and changelog. "
@@ -170,11 +177,17 @@ def agy_start_with_expected_file(
 @mcp.tool()
 def agy_run_wait(
     run_ids: list[str],
-    condition: str = "any_attention",
+    condition: waiter.WaitCondition = "any_attention",
     after: dict[str, str] | None = None,
     timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Wait for sparse Run events instead of repeatedly polling status."""
+    """Wait for sparse Run events instead of repeatedly polling status.
+
+    run_ids is always a list, even for one Run. Supported condition values:
+    any_attention, any_terminal, all_terminal, any_event, plus aliases
+    attention, terminal, finished, finish, complete, completed, result,
+    all_finished, all_complete, and all_completed.
+    """
     return orchestration.wait(
         run_ids,
         condition=condition,
@@ -303,7 +316,11 @@ def agy_review_commit(
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Start a typed review Run for one commit and return immediately."""
+    """Start a typed review Run for one commit and return immediately.
+
+    Keep issue focused and use narrow scope_paths when possible. After the run
+    completes, prefer agy_review_result over manually polling raw artifacts.
+    """
     try:
         return orchestration.review_commit(
             commit=commit,
@@ -337,7 +354,12 @@ def agy_review_branch(
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Start a typed review Run for branch and working-tree changes."""
+    """Start a typed review Run for branch and working-tree changes.
+
+    Keep issue focused and use narrow scope_paths when possible. Wait for
+    completion with agy_run_wait, then prefer agy_review_result. Avoid frequent
+    agy_run_observe(include_terminal_tail=True) calls unless debugging the bridge.
+    """
     try:
         return orchestration.review_branch(
             issue=issue,
@@ -359,7 +381,10 @@ def agy_review_branch(
 
 @mcp.tool()
 def agy_review_result(run_id: str) -> dict[str, Any]:
-    """Validate and summarize the artifact from a typed review Run."""
+    """Validate and summarize the artifact from a typed review Run.
+
+    Preferred way to consume completed agy_review_commit/agy_review_branch runs.
+    """
     return orchestration.review_result(run_id)
 
 

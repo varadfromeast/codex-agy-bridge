@@ -42,6 +42,7 @@ CONDITION_ALIASES = {
     "all_complete": "all_terminal",
     "all_completed": "all_terminal",
 }
+SUPPORTED_CONDITIONS = tuple(sorted({*CANONICAL_CONDITIONS, *CONDITION_ALIASES}))
 
 ATTENTION_EVENTS = {
     "needs_attention",
@@ -495,7 +496,7 @@ def _result(
 def _normalize_condition(condition: str) -> WaitCondition:
     normalized = CONDITION_ALIASES.get(condition, condition)
     if normalized not in CANONICAL_CONDITIONS:
-        supported = ", ".join(sorted({*CANONICAL_CONDITIONS, *CONDITION_ALIASES}))
+        supported = ", ".join(SUPPORTED_CONDITIONS)
         raise ValueError(
             f"unsupported wait condition: {condition}. Supported conditions: "
             f"{supported}"

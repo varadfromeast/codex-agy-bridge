@@ -66,14 +66,45 @@ def test_review_commit_starts_tagged_expected_file_run(tmp_path):
         "schema": "agy.review.v1",
     }
     assert result["next"] == {
-        "result_tool": "agy_review_result",
-        "wait_tool": "agy_run_wait",
+        "result_tool": "codex_agy_bridge_agy_review_result",
+        "wait_tool": "codex_agy_bridge_agy_run_wait",
+        "local_result_tool": "agy_review_result",
+        "local_wait_tool": "agy_run_wait",
+        "wait_conditions": [
+            "all_complete",
+            "all_completed",
+            "all_finished",
+            "all_terminal",
+            "any_attention",
+            "any_event",
+            "any_terminal",
+            "attention",
+            "complete",
+            "completed",
+            "event",
+            "finish",
+            "finished",
+            "result",
+            "terminal",
+        ],
         "max_wait_seconds": 120,
         "poll_interval_seconds": 60,
+        "wait_call": {
+            "tool": "codex_agy_bridge_agy_run_wait",
+            "arguments": {
+                "run_ids": [result["run_id"]],
+                "condition": "any_terminal",
+                "timeout_seconds": 120,
+            },
+        },
+        "result_call": {
+            "tool": "codex_agy_bridge_agy_review_result",
+            "arguments": {"run_id": result["run_id"]},
+        },
         "advice": (
-            "Poll agy_review_result or the output_file directly for long reviews; "
-            "MCP wait/request timeouts only mean the observer disconnected, not "
-            "that the review failed."
+            "Wait with the provided wait_call args, then call result_call; MCP "
+            "wait/request timeouts only mean the observer disconnected, not that "
+            "the review failed."
         ),
     }
     assert state["task_kind"] == "review_commit"
