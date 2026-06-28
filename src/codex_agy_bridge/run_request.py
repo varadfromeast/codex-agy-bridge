@@ -205,7 +205,15 @@ class RunRequest:
             "target_name": self.target_name,
             "request_key": self.request_key,
             "notification_resource_uri": f"agy-run://{run_id}/notifications",
-            "wait_tool": "agy_run_wait",
+            "wait_tool": "codex_agy_bridge_agy_run_wait",
+            "local_wait_tool": "agy_run_wait",
+            "wait_call": {
+                "tool": "codex_agy_bridge_agy_run_wait",
+                "arguments": {
+                    "run_ids": [run_id],
+                    "condition": "any_attention",
+                },
+            },
             "session_label": session_label,
             "tmux_session": tmux_session,
             "runner_pid": None,

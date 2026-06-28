@@ -8,7 +8,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from codex_agy_bridge import waiter
 from codex_agy_bridge.state import RunState
+
+CODEX_MCP_TOOL_PREFIX = "codex_agy_bridge_"
 
 REVIEW_SCHEMA = "agy.review.v1"
 REVIEW_TASK_KINDS = {"review_commit", "review_branch"}
@@ -54,8 +57,30 @@ def launch_response(state: RunState) -> dict[str, Any]:
         "output_file": state.get("review_output_file"),
         "expected_artifact": dict(REVIEW_ARTIFACT),
         "next": {
-            "wait_tool": "agy_run_wait",
-            "result_tool": "agy_review_result",
+            "result_tool": f"{CODEX_MCP_TOOL_PREFIX}agy_review_result",
+            "wait_tool": f"{CODEX_MCP_TOOL_PREFIX}agy_run_wait",
+            "local_result_tool": "agy_review_result",
+            "local_wait_tool": "agy_run_wait",
+            "wait_conditions": list(waiter.SUPPORTED_CONDITIONS),
+            "max_wait_seconds": 120,
+            "poll_interval_seconds": 60,
+            "wait_call": {
+                "tool": f"{CODEX_MCP_TOOL_PREFIX}agy_run_wait",
+                "arguments": {
+                    "run_ids": [state["run_id"]],
+                    "condition": "any_terminal",
+                    "timeout_seconds": 120,
+                },
+            },
+            "result_call": {
+                "tool": f"{CODEX_MCP_TOOL_PREFIX}agy_review_result",
+                "arguments": {"run_id": state["run_id"]},
+            },
+            "advice": (
+                "Wait with the provided wait_call args, then call result_call; "
+                "MCP wait/request timeouts only mean the observer disconnected, "
+                "not that the review failed."
+            ),
         },
     }
 

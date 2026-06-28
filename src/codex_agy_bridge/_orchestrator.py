@@ -55,7 +55,7 @@ DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)"
 DEFAULT_MAX_PARALLEL = 50
 JANITOR_INTERVAL_SECONDS = 60
 DEFAULT_WAIT_TIMEOUT_SECONDS = 86_400
-DEFAULT_MCP_WAIT_SLICE_SECONDS = 475
+DEFAULT_MCP_WAIT_SLICE_SECONDS = 120
 CANCEL_TERM_GRACE_SECONDS = 0.25
 CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
@@ -66,9 +66,9 @@ LOGGER = logging.getLogger(__name__)
 def _mcp_wait_slice_seconds() -> int:
     """Return the longest single MCP wait call should block.
 
-    Runs are durable and continue in background; keeping each wait under common
-    MCP gateway request deadlines prevents stale timed-out calls from wedging the
-    stdio server while still allowing clients to loop on cursors.
+    Runs are durable and continue in background. Keep each individual MCP wait
+    bounded so long review/task waits can be observed by repeated waits or
+    non-blocking result/status polls without implying the underlying Run failed.
     """
     configured = os.environ.get(
         "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
@@ -658,7 +658,18 @@ class RunnerOrchestrator:
                 "terminal_tail_available": snapshot["terminal_tail_available"],
                 "artifact_dir": state.get("artifact_dir"),
                 "notification_resource_uri": state.get("notification_resource_uri"),
-                "wait_tool": state.get("wait_tool", "agy_run_wait"),
+                "wait_tool": state.get("wait_tool", "codex_agy_bridge_agy_run_wait"),
+                "local_wait_tool": state.get("local_wait_tool", "agy_run_wait"),
+                "wait_call": state.get(
+                    "wait_call",
+                    {
+                        "tool": "codex_agy_bridge_agy_run_wait",
+                        "arguments": {
+                            "run_ids": [run_id],
+                            "condition": "any_attention",
+                        },
+                    },
+                ),
                 "latest_step": latest,
                 "provider_health": core.run_provider_health(self.run_dir(run_id)),
                 "interactive_queue": interactive_queue,
