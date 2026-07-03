@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from codex_agy_bridge import interactive_input, runner, session_events
+from codex_agy_bridge.task_packet import format_task_packet
 from codex_agy_bridge.supervision import RunSupervisor, _marker_is_echoed_task_prompt
 
 
@@ -544,6 +545,30 @@ def test_supervisor_ignores_completion_marker_in_echoed_task_prompt(
                 "Currently signed in as user@example.com",
             ]
         ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert supervisor._terminal_completion_response() is None
+
+
+def test_supervisor_ignores_completion_marker_in_current_task_packet(
+    monkeypatch,
+    tmp_path,
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    (tmp_path / "terminal.log").write_text(
+        format_task_packet("research the question", completion_marker="DONE_MARKER")
+        + "\nCurrently signed in as user@example.com\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(runner, "load_state", lambda _run_id: state)

@@ -543,12 +543,37 @@ def _terminal_event_kind(status: str) -> str:
 
 
 def _marker_is_echoed_task_prompt(text: str, marker_at: int) -> bool:
-    previous_line_end = text.rfind("\n", 0, marker_at)
-    if previous_line_end < 0:
+    previous_text = text[:marker_at]
+    if "\n" not in previous_text:
         return False
-    previous_line_start = text.rfind("\n", 0, previous_line_end)
-    previous_line = text[previous_line_start + 1 : previous_line_end].strip()
-    return previous_line == "Completion marker:"
+    previous_lines = []
+    for line in previous_text.splitlines()[-12:]:
+        normalized = _normalize_task_prompt_line(line)
+        if normalized:
+            previous_lines.append(normalized)
+    if not previous_lines:
+        return False
+    if previous_lines[-1] == "Completion marker:":
+        return True
+    try:
+        heading_index = len(previous_lines) - 1 - previous_lines[::-1].index(
+            "Completion marker:"
+        )
+    except ValueError:
+        return False
+    instruction_lines = previous_lines[heading_index + 1 :]
+    instruction_text = " ".join(instruction_lines).casefold()
+    return (
+        "strongly suggested" in instruction_text
+        or "last line only after" in instruction_text
+        or "full and final response" in instruction_text
+    )
+
+
+def _normalize_task_prompt_line(line: str) -> str:
+    line = line.strip()
+    line = line.lstrip("│┃║>▌▍▎▏| ").strip()
+    return line
 
 
 def _terminal_completion_response_is_meaningful(response: str, marker: str) -> bool:
