@@ -6,6 +6,7 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 
 RunStatus = Literal[
     "queued",
+    "launching",
     "running",
     "cancel_requested",
     "completed",
@@ -16,7 +17,12 @@ ExecutionMode = Literal["print", "interactive"]
 AgentMode = Literal["task", "conversation"]
 ExecutionSurface = Literal["foreground", "headless"]
 
-ACTIVE_STATUSES: set[RunStatus] = {"queued", "running", "cancel_requested"}
+ACTIVE_STATUSES: set[RunStatus] = {
+    "queued",
+    "launching",
+    "running",
+    "cancel_requested",
+}
 TERMINAL_STATUSES: set[RunStatus] = {"completed", "failed", "canceled"}
 
 
@@ -28,6 +34,7 @@ class RunState(TypedDict, total=False):
     workspace: str
     artifact_dir: str
     expected_file: str | None
+    expected_file_baseline: dict[str, int] | None
     prompt: str
     prompt_preview: str
     completion_marker: str

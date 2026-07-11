@@ -79,6 +79,11 @@ def doctor(
     executable = _probe(cli_errors, "executable", lambda: adapter.executable)
     version = _probe(cli_errors, "version", adapter.version)
     available_models = _probe(cli_errors, "models", adapter.models)
+    authentication = (
+        _probe(cli_errors, "authentication", adapter.authentication_status)
+        if callable(getattr(adapter, "authentication_status", None))
+        else None
+    )
     imported_plugins = _probe(cli_errors, "plugins", adapter.plugins)
     capabilities = _probe(cli_errors, "capabilities", adapter.capabilities)
     report: dict[str, Any] = {
@@ -101,9 +106,13 @@ def doctor(
                 if capabilities is not None
                 else None
             ),
-            "authentication": _authentication_report(
-                available_models=available_models,
-                errors=cli_errors,
+            "authentication": (
+                authentication
+                if isinstance(authentication, dict)
+                else _authentication_report(
+                    available_models=available_models,
+                    errors=cli_errors,
+                )
             ),
             "errors": cli_errors,
         },

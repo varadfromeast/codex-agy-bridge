@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Mapping
@@ -87,32 +88,55 @@ class AntigravityCli:
             return list(self._models)
 
     def authentication_status(self) -> dict[str, Any]:
-        """Return whether ``agy models`` proves the CLI is signed in."""
-        completed, output = self._execute("models")
-        if completed.returncode == 0:
-            models = self._nonempty_lines(output)
-            if models:
-                return {
-                    "status": "authenticated",
-                    "evidence": "agy models returned available models",
-                }
+        """Probe runtime authentication without trusting cached model names."""
+        with tempfile.TemporaryDirectory(prefix="agy-auth-probe-") as directory:
+            log_path = Path(directory) / "agy.log"
+            completed, output = self._execute(
+                "--log-file",
+                str(log_path),
+                "models",
+            )
+            try:
+                runtime_log = log_path.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )[: self.max_output_chars]
+            except OSError:
+                runtime_log = ""
+
+        authenticated_at = max(
+            runtime_log.rfind("OAuth: authenticated successfully"),
+            runtime_log.rfind("ChainedAuth: authenticated via"),
+        )
+        auth_error_at = runtime_log.rfind("You are not logged into Antigravity")
+        if authenticated_at >= 0 and authenticated_at > auth_error_at:
             return {
-                "status": "unknown",
-                "evidence": "agy models succeeded without listing models",
+                "status": "authenticated",
+                "evidence": "Antigravity runtime authenticated successfully",
             }
-        health = core.classify_provider_health_text(output)
+
+        evidence = "\n".join(part for part in (output, runtime_log) if part)
+        health = core.classify_provider_health_text(evidence)
         if health["status"] in {"auth_interaction_required", "auth_unavailable"}:
             return {
                 "status": "auth_required",
-                "evidence": output.strip(),
+                "evidence": evidence.strip(),
                 "action": health.get(
                     "action",
                     "Launch the Antigravity CLI without arguments and sign in.",
                 ),
             }
+        if completed.returncode == 0 and self._nonempty_lines(output):
+            return {
+                "status": "unknown",
+                "evidence": (
+                    "agy models listed cached models but the runtime did not "
+                    "confirm authentication"
+                ),
+            }
         return {
             "status": "unknown",
-            "evidence": output.strip(),
+            "evidence": evidence.strip(),
         }
 
     def plugins(self) -> list[dict[str, str]]:

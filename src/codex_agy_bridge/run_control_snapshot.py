@@ -41,7 +41,7 @@ class RunControlSnapshot(dict[str, Any]):
             else core.load_state(run_id, state_root=state_root)
         )
         run_dir = core.run_dir(run_id, state_root=state_root)
-        events = session_events.read_events(run_dir, limit=10_000)
+        events = session_events.read_recent_events(run_dir, limit=10_000)
         latest_event = events[-1] if events else None
         latest_event_id = session_events.latest_event_id(run_dir)
         latest_event_key = session_events.latest_event_key(run_dir)
@@ -171,7 +171,7 @@ def _activity_state(
         return "terminal"
     if attention.get("required"):
         return "awaiting_user"
-    if state["status"] == "queued":
+    if state["status"] in {"queued", "launching"}:
         return "starting"
     if state.get("interactive_prompt_in_flight"):
         return "waiting_for_response"
@@ -190,7 +190,7 @@ def _activity_state(
 
 def _can_send_text(state: RunState) -> bool:
     return (
-        state["status"] in ACTIVE_STATUSES
+        state["status"] == "running"
         and state.get("execution_surface", "headless") == "foreground"
         and bool(state.get("human_attachable", False))
         and bool(state.get("tmux_session"))

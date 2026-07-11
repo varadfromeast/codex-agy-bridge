@@ -81,7 +81,10 @@ def test_run_request_prepares_identity_and_initial_state(tmp_path):
     assert "verify they exist and are non-empty before finishing" in state["prompt"]
     assert state["artifact_dir"].endswith("/state/runs/run-1/artifacts")
     assert "\nExpected output:\n" in state["prompt"]
-    assert "full and final response Codex should show the user" in state["prompt"]
+    assert (
+        "full and final response the calling harness should show the user"
+        in state["prompt"]
+    )
     assert "last line only after all requested files" in state["prompt"]
     assert state["prompt"].endswith("DONE")
     assert state["previous_conversation_id"] == "previous"

@@ -12,6 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 
 DEFAULT_TMUX_TIMEOUT_SECONDS = 2.0
+DEFAULT_CHILD_START_TIMEOUT_SECONDS = 2.0
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 OSC_ESCAPE_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -124,9 +125,33 @@ def launch(
     stderr_log: Path,
     execution_mode: str = "print",
     execution_surface: str = "headless",
+    defer_child_start: bool = False,
 ) -> None:
     exit_code = terminal_log.parent / "agy.exit-code"
     exit_code_tmp = terminal_log.parent / "agy.exit-code.tmp"
+    child_pid = terminal_log.parent / "agy.pid"
+    child_pid_tmp = terminal_log.parent / "agy.pid.tmp"
+    child_gate = terminal_log.parent / "agy.start"
+    for stale_path in (
+        exit_code,
+        exit_code_tmp,
+        child_pid,
+        child_pid_tmp,
+        child_gate,
+    ):
+        with suppress(OSError):
+            stale_path.unlink()
+    launch_command = f"exec {shlex.join(command)}"
+    if defer_child_start:
+        launch_command = (
+            f"while [ ! -e {shlex.quote(str(child_gate))} ]; do sleep 0.01; done; "
+            f"{launch_command}"
+        )
+    child_command = f"sh -c {shlex.quote(launch_command)}"
+    publish_child_pid = [
+        f"printf '%s\\n' \"$agy_pid\" > {shlex.quote(str(child_pid_tmp))}",
+        f"mv {shlex.quote(str(child_pid_tmp))} {shlex.quote(str(child_pid))}",
+    ]
     session_environment: list[str] = []
     for name in ("AGY_CMD", "AGY_BRIDGE_STATE_DIR", "AGY_BRIDGE_AGY_ROOT"):
         value = os.environ.get(name)
@@ -136,7 +161,14 @@ def launch(
         script = "\n".join(
             [
                 "set -u",
-                shlex.join(command),
+                f"{child_command} < /dev/tty &",
+                "agy_pid=$!",
+                *publish_child_pid,
+                "cleanup() {",
+                '  kill "$agy_pid" 2>/dev/null || true',
+                "}",
+                "trap cleanup HUP INT TERM",
+                'wait "$agy_pid"',
                 "status=$?",
                 f"printf '%s\\n' \"$status\" > {shlex.quote(str(exit_code_tmp))}",
                 f"mv {shlex.quote(str(exit_code_tmp))} {shlex.quote(str(exit_code))}",
@@ -147,9 +179,10 @@ def launch(
         script = "\n".join(
             [
                 "set -u",
-                f"{shlex.join(command)} >> {shlex.quote(str(stdout_log))} "
+                f"{child_command} >> {shlex.quote(str(stdout_log))} "
                 f"2>> {shlex.quote(str(stderr_log))} &",
                 "agy_pid=$!",
+                *publish_child_pid,
                 f"tail -n +1 -F {shlex.quote(str(progress_log))} &",
                 "tail_pid=$!",
                 "cleanup() {",
@@ -203,6 +236,45 @@ def launch(
     except Exception:
         stop(session)
         raise
+
+
+def wait_for_child_pid(
+    session: str,
+    path: Path,
+    *,
+    timeout_seconds: float = DEFAULT_CHILD_START_TIMEOUT_SECONDS,
+) -> int:
+    """Wait for the tmux wrapper to publish a live Antigravity child PID."""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    command = ["tmux", "has-session", "-t", session]
+    while True:
+        try:
+            pid = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = 0
+        if pid > 0 and process_alive(pid):
+            return pid
+        if not alive(session):
+            raise TmuxCommandError(
+                command=command,
+                reason="child exited before startup readiness",
+            )
+        if time.monotonic() >= deadline:
+            raise TmuxCommandError(
+                command=command,
+                reason="child PID startup timeout",
+            )
+        time.sleep(0.02)
+
+
+def process_alive(pid: int) -> bool:
+    """Return whether a recorded Antigravity child process still exists."""
+    return _process_alive(pid)
+
+
+def release_child(path: Path) -> None:
+    """Release a PID-published wrapper to exec the Antigravity command."""
+    path.touch(mode=0o600, exist_ok=False)
 
 
 def attach(session: str, *, check: bool = False) -> None:

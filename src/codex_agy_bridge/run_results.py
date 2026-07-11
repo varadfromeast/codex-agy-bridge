@@ -14,6 +14,7 @@ from codex_agy_bridge.state import TERMINAL_STATUSES, RunState
 
 RESULT_PREVIEW_BYTES = 4096
 RESULT_READ_MAX_BYTES = 262_144
+UTF8_MAX_CODEPOINT_BYTES = 4
 ARTIFACT_PATH_RE = re.compile(
     r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\."
     r"(?:md|txt|json|yaml|yml|csv|tsv|html|htm|xml|log|patch|diff)"
@@ -36,7 +37,12 @@ def metadata(state: RunState, run_dir: Path) -> dict[str, Any] | None:
     total_bytes = artifact_path.stat().st_size
     with artifact_path.open("rb") as handle:
         preview_bytes = handle.read(RESULT_PREVIEW_BYTES)
-    preview = preview_bytes.decode("utf-8", errors="replace")
+    preview_chunk = _complete_utf8_prefix(preview_bytes)
+    preview = (
+        preview_chunk[1]
+        if preview_chunk is not None
+        else preview_bytes.decode("utf-8", errors="replace")
+    )
     with artifact_path.open("rb") as handle:
         artifact_scan = handle.read(RESULT_READ_MAX_BYTES).decode(
             "utf-8",
@@ -74,10 +80,23 @@ def read_chunk(
     if artifact_path is None or not artifact_path.is_file():
         raise ValueError("result artifact is unavailable")
     total_bytes = artifact_path.stat().st_size
+    start = min(offset_bytes, total_bytes)
     with artifact_path.open("rb") as handle:
-        handle.seek(min(offset_bytes, total_bytes))
+        handle.seek(start)
         data = handle.read(max_bytes)
-    next_offset = offset_bytes + len(data)
+        decoded = _complete_utf8_prefix(data)
+        while decoded is None and len(data) < UTF8_MAX_CODEPOINT_BYTES:
+            next_byte = handle.read(1)
+            if not next_byte:
+                break
+            data += next_byte
+            decoded = _complete_utf8_prefix(data)
+    if decoded is None:
+        raise ValueError(
+            "offset_bytes must point to a UTF-8 character boundary in the result"
+        )
+    data, content = decoded
+    next_offset = start + len(data)
     complete = next_offset >= total_bytes
     return {
         "run_id": state["run_id"],
@@ -86,8 +105,20 @@ def read_chunk(
         "total_bytes": total_bytes,
         "next_offset_bytes": None if complete else next_offset,
         "complete": complete,
-        "content": data.decode("utf-8", errors="replace"),
+        "content": content,
     }
+
+
+def _complete_utf8_prefix(data: bytes) -> tuple[bytes, str] | None:
+    try:
+        return data, data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        if error.reason != "unexpected end of data" or error.end != len(data):
+            return None
+        complete = data[: error.start]
+        if not complete:
+            return None
+        return complete, complete.decode("utf-8")
 
 
 def ensure_artifact(state: RunState, run_dir: Path) -> Path | None:
@@ -108,8 +139,9 @@ def ensure_artifact(state: RunState, run_dir: Path) -> Path | None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(response, encoding="utf-8")
+        core.write_private_text(temporary, response)
         os.replace(temporary, path)
+        path.chmod(0o600)
     finally:
         if temporary.exists():
             temporary.unlink()

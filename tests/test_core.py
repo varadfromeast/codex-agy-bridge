@@ -270,6 +270,36 @@ def test_finds_new_conversation_by_exact_prompt(tmp_path, monkeypatch):
     )
 
 
+def test_finds_prompt_wrapped_with_antigravity_metadata(tmp_path, monkeypatch):
+    brain = tmp_path / "brain"
+    monkeypatch.setattr(core, "BRAIN_DIR", brain)
+    transcript = (
+        brain / "conversation-4" / ".system_generated" / "logs" / "transcript.jsonl"
+    )
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps(
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": (
+                    "<USER_REQUEST>\nunique prompt\n</USER_REQUEST>\n"
+                    "<ADDITIONAL_METADATA>local time</ADDITIONAL_METADATA>"
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        core.conversation_for_prompt_after("unique prompt", started_after=0)
+        == "conversation-4"
+    )
+
+
 def test_conversation_prompt_lookup_does_not_match_overlapping_substrings(
     tmp_path,
     monkeypatch,

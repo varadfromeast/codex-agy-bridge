@@ -91,6 +91,22 @@ def test_core_update_state_uses_store_sentinel_rules(tmp_path: Path):
     assert not (tmp_path / "active" / "run-terminal").exists()
 
 
+def test_store_rejects_cancel_requested_to_running_transition(tmp_path: Path):
+    store = DiskRunStore(tmp_path)
+    store.save_run(
+        "run-canceling",
+        {"run_id": "run-canceling", "status": "cancel_requested"},
+    )
+
+    state = store.update_run(
+        "run-canceling",
+        {"status": "running", "launched_at": 123.0},
+    )
+
+    assert state["status"] == "cancel_requested"
+    assert "launched_at" not in state
+
+
 def test_disk_run_store_update_goal(tmp_path: Path):
     store = DiskRunStore(tmp_path)
     goal_state: GoalState = {

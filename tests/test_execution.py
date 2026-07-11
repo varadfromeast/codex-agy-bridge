@@ -24,7 +24,11 @@ def test_tmux_session_lifecycle(tmp_path: Path):
         assert not session.is_alive()
 
         # Test start
-        session.start("run-3", cmd, tmp_path)
+        with patch(
+            "codex_agy_bridge.terminal.wait_for_child_pid",
+            return_value=2468,
+        ):
+            assert session.start("run-3", cmd, tmp_path) == 2468
         assert session.is_alive()
         # Should call tmux new-session and tmux pipe-pane
         assert mock_run.call_count >= 3

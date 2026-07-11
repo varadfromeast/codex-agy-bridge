@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import stat
+
 import pytest
 
 from codex_agy_bridge import session_events
@@ -36,6 +39,23 @@ def test_append_event_records_rich_event_contract_and_bumps_marker(tmp_path):
     assert (run_dir / "notify.seq").read_text(encoding="utf-8") == "000000000001\n"
     assert session_events.latest_event_key(run_dir) == event["event_id"]
     assert session_events.read_events(run_dir) == [event]
+
+
+def test_append_event_uses_owner_only_files_with_permissive_umask(tmp_path):
+    run_dir = tmp_path / "runs" / "run-private"
+
+    previous_umask = os.umask(0)
+    try:
+        session_events.append_event(run_dir, "run_started")
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+    for name in ("session-events.jsonl", "notify.seq"):
+        assert stat.S_IMODE((run_dir / name).stat().st_mode) == 0o600
+    lock_path = run_dir / "session-events.lock"
+    if lock_path.exists():
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
 
 
 def test_read_events_after_cursor_returns_only_newer_events(tmp_path):

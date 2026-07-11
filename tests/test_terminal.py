@@ -56,10 +56,41 @@ def test_terminal_launch_owns_tmux_setup(monkeypatch, tmp_path):
     shell_index = calls[0][0].index("sh")
     assert calls[0][0][shell_index : shell_index + 2] == ["sh", "-c"]
     script = calls[0][0][shell_index + 2]
-    assert "/usr/local/bin/agy --print work" in script
+    assert "exec /usr/local/bin/agy --print work" in script
+    assert "agy.start" not in script
+    assert "agy.pid.tmp" in script
+    assert "agy_pid=$!" in script
     assert "tail -n +1 -F" in script
     assert "terminal-progress.log" in script
     assert calls[1][0][:5] == ["tmux", "pipe-pane", "-o", "-t", "agy-target"]
+
+
+def test_terminal_launch_can_gate_child_for_supervisor_readiness(
+    monkeypatch, tmp_path
+):
+    calls = []
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+
+    terminal.launch(
+        "agy-target",
+        ["/usr/local/bin/agy", "--prompt-interactive", "work"],
+        workspace=str(tmp_path),
+        terminal_log=tmp_path / "terminal.log",
+        progress_log=tmp_path / "terminal-progress.log",
+        stdout_log=tmp_path / "agy.stdout.log",
+        stderr_log=tmp_path / "agy.stderr.log",
+        execution_surface="foreground",
+        defer_child_start=True,
+    )
+
+    script = calls[0][0][-1]
+    assert "agy.start" in script
+    assert "exec /usr/local/bin/agy --prompt-interactive work" in script
 
 
 def test_terminal_final_kill_allows_captured_descendant_reparenting(monkeypatch):
@@ -206,9 +237,12 @@ def test_terminal_launch_foreground_runs_visible_cli_without_tail_wrapper(
 
     shell_index = calls[0][0].index("sh")
     script = calls[0][0][shell_index + 2]
-    assert "/usr/local/bin/agy --prompt-interactive 'Task:" in script
+    assert "exec /usr/local/bin/agy --prompt-interactive" in script
+    assert "agy.start" not in script
     assert "tail -n +1 -F" not in script
-    assert "agy_pid=$!" not in script
+    assert "< /dev/tty &" in script
+    assert "agy_pid=$!" in script
+    assert "agy.pid.tmp" in script
     assert ">>" not in script
     assert calls[1][0][:5] == ["tmux", "pipe-pane", "-o", "-t", "agy-target"]
 
