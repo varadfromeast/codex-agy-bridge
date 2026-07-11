@@ -8,10 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from codex_agy_bridge import waiter
-from codex_agy_bridge.state import RunState
-
-CODEX_MCP_TOOL_PREFIX = "codex_agy_bridge_"
+from codex_agy_bridge import expected_artifact, harness_contract, waiter
+from codex_agy_bridge.state import ACTIVE_STATUSES, RunState
 
 REVIEW_SCHEMA = "agy.review.v1"
 REVIEW_TASK_KINDS = {"review_commit", "review_branch"}
@@ -23,7 +21,9 @@ REVIEW_ARTIFACT = {
 
 def default_output_file(workspace: str) -> str:
     root = Path(workspace).expanduser().resolve()
-    directory = root / ".agy-bridge-artifacts" / "reviews"
+    directory = (root / ".agy-bridge-artifacts" / "reviews").resolve()
+    if not directory.is_relative_to(root):
+        raise ValueError("output_file must resolve inside the workspace")
     directory.mkdir(parents=True, exist_ok=True)
     return str(directory / f"{uuid.uuid4().hex}.json")
 
@@ -51,31 +51,26 @@ def normalize_output_file(workspace: str, output_file: str | None) -> str:
 
 
 def launch_response(state: RunState) -> dict[str, Any]:
+    run_id = state["run_id"]
+    wait_call = harness_contract.wait_call(
+        [run_id],
+        condition="any_terminal",
+        timeout_seconds=120,
+    )
+    result_call = harness_contract.review_result_call(run_id)
     return {
         "status": state["status"],
-        "run_id": state["run_id"],
+        "run_id": run_id,
         "output_file": state.get("review_output_file"),
         "expected_artifact": dict(REVIEW_ARTIFACT),
         "next": {
-            "result_tool": f"{CODEX_MCP_TOOL_PREFIX}agy_review_result",
-            "wait_tool": f"{CODEX_MCP_TOOL_PREFIX}agy_run_wait",
-            "local_result_tool": "agy_review_result",
-            "local_wait_tool": "agy_run_wait",
+            "result_tool": result_call["tool"],
+            "wait_tool": wait_call["tool"],
             "wait_conditions": list(waiter.SUPPORTED_CONDITIONS),
             "max_wait_seconds": 120,
             "poll_interval_seconds": 60,
-            "wait_call": {
-                "tool": f"{CODEX_MCP_TOOL_PREFIX}agy_run_wait",
-                "arguments": {
-                    "run_ids": [state["run_id"]],
-                    "condition": "any_terminal",
-                    "timeout_seconds": 120,
-                },
-            },
-            "result_call": {
-                "tool": f"{CODEX_MCP_TOOL_PREFIX}agy_review_result",
-                "arguments": {"run_id": state["run_id"]},
-            },
+            "wait_call": wait_call,
+            "result_call": result_call,
             "advice": (
                 "Wait with the provided wait_call args, then call result_call; "
                 "MCP wait/request timeouts only mean the observer disconnected, "
@@ -152,7 +147,7 @@ def result(state: RunState, *, provider_health: dict[str, Any]) -> dict[str, Any
         }
     path = Path(path_text)
     artifact = _artifact_base(path)
-    active = state["status"] in {"queued", "running", "cancel_requested"}
+    active = state["status"] in ACTIVE_STATUSES
     if not path.is_file():
         if active:
             return {
@@ -183,6 +178,38 @@ def result(state: RunState, *, provider_health: dict[str, Any]) -> dict[str, Any
         }
     artifact["exists"] = True
     artifact["total_bytes"] = path.stat().st_size
+    if state["status"] != "completed":
+        return {
+            "status": state["status"],
+            "summary": None,
+            "review": None,
+            "artifact": {
+                **artifact,
+                "valid": False,
+            },
+            "validation_errors": [],
+            "run": _run_metadata(state, provider_health),
+        }
+    if "expected_file_baseline" in state:
+        provenance_error = expected_artifact.validation_error(
+            path,
+            workspace=state.get("workspace") or path.parent,
+            baseline=state.get("expected_file_baseline"),
+            label="review artifact",
+        )
+        if provenance_error is not None:
+            return {
+                "status": "failed_validation",
+                "summary": None,
+                "review": None,
+                "artifact": {
+                    **artifact,
+                    "valid": False,
+                    "validation_errors": [provenance_error],
+                },
+                "validation_errors": [provenance_error],
+                "run": _run_metadata(state, provider_health),
+            }
     try:
         review = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:

@@ -9,7 +9,14 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
-from codex_agy_bridge import interactive_input, session_events, terminal
+from codex_agy_bridge import (
+    core,
+    expected_artifact,
+    harness_contract,
+    interactive_input,
+    session_events,
+    terminal,
+)
 from codex_agy_bridge import runner as runtime
 from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.prompt_detector import PromptDetector
@@ -87,7 +94,12 @@ class RunSupervisor:
     def execute(self) -> int:
         """Run the complete lifecycle behind one small interface."""
         try:
-            self._launch()
+            claim = runtime.claim_run(self.run_id, runner_pid=os.getpid())
+            self.state = claim["state"]
+            if not claim["applied"]:
+                return self._exit_without_claim()
+            if not self._launch():
+                return 0
             monitor_result = self._monitor_until_exit()
             if monitor_result is not None:
                 return monitor_result
@@ -96,9 +108,9 @@ class RunSupervisor:
             with suppress(Exception):
                 self._stop()
             with suppress(OSError):
-                (self.directory / "supervisor-traceback.log").write_text(
+                core.write_private_text(
+                    self.directory / "supervisor-traceback.log",
                     traceback.format_exc(),
-                    encoding="utf-8",
                 )
             self._finish(
                 status="failed",
@@ -106,14 +118,33 @@ class RunSupervisor:
             )
             return 1
 
-    def _launch(self) -> None:
+    def _exit_without_claim(self) -> int:
+        if self.state.get("status") != "cancel_requested":
+            return 0
+        finished_at = datetime.now(UTC).isoformat()
+        outcome = runtime.acknowledge_cancel(
+            self.run_id,
+            result=None,
+            error=None,
+            finished_at=finished_at,
+        )
+        self.state = outcome["state"]
+        if outcome["applied"]:
+            session_events.append_event(
+                self.directory,
+                "run_canceled",
+                {"status": "canceled"},
+            )
+        return 0
+
+    def _launch(self) -> bool:
         command = runtime.build_command(self.state)
         self.launched_at = time.time()
-        self.progress_path.write_text(
+        core.write_private_text(
+            self.progress_path,
             "Starting Antigravity. Waiting for transcript events...\n",
-            encoding="utf-8",
         )
-        runtime.launch_process(
+        agy_pid = runtime.launch_process(
             self.state,
             command,
             workspace=str(self.state["workspace"]),
@@ -121,23 +152,36 @@ class RunSupervisor:
         self.session = (
             str(self.state["tmux_session"]) if self.state.get("tmux_session") else None
         )
-        runtime.update_state(
+        if not runtime.launch_ready(self.session, agy_pid):
+            raise RuntimeError(
+                "Antigravity child failed startup readiness "
+                "(tmux session and child PID must both be alive)"
+            )
+        outcome = runtime.mark_running(
             self.run_id,
-            status="running",
             runner_pid=os.getpid(),
+            agy_pid=agy_pid,
             command=[*command[:-1], "<prompt>"],
             launched_at=self.launched_at,
             started_at=self.state.get("started_at") or self.state.get("created_at"),
         )
+        self.state = outcome["state"]
+        if not outcome["applied"]:
+            self._stop()
+            self._exit_without_claim()
+            return False
+        runtime.release_launch(self.state)
         session_events.append_event(
             self.directory,
             "run_started",
             {
                 "status": "running",
                 "tmux_session": self.session,
+                "agy_pid": agy_pid,
             },
         )
         self._auto_open_terminal()
+        return True
 
     def _auto_open_terminal(self) -> None:
         if (
@@ -151,7 +195,7 @@ class RunSupervisor:
         except Exception as error:
             with (
                 suppress(OSError),
-                self.progress_path.open("a", encoding="utf-8") as handle,
+                core.open_private_text_append(self.progress_path) as handle,
             ):
                 handle.write(f"Terminal auto-open failed: {error}\n")
 
@@ -166,7 +210,11 @@ class RunSupervisor:
             self._observe_progress_stall()
             self._deliver_interactive_input()
             response = self._response()
-            terminal_response = self._terminal_completion_response()
+            terminal_response = (
+                self._terminal_completion_response()
+                if self.state.get("execution_surface") != "foreground"
+                else None
+            )
             if terminal_response is not None:
                 response = response or terminal_response
             if self._completion_is_stable(response):
@@ -260,6 +308,7 @@ class RunSupervisor:
         ):
             return
         self.next_progress_stall_event_at = now + self.progress_stall_seconds
+        next_call = harness_contract.terminal_observe_call(self.run_id)
         session_events.append_event(
             self.directory,
             "progress_stalled",
@@ -276,7 +325,8 @@ class RunSupervisor:
                     "latest_transcript_step": self.latest_transcript_step_index,
                     "idle_seconds": idle_seconds,
                     "stalled_for_seconds": idle_seconds,
-                    "suggested_next_tool": "agy_terminal_snapshot",
+                    "suggested_next_tool": next_call["tool"],
+                    "suggested_next_arguments": next_call["arguments"],
                 },
             },
         )
@@ -401,8 +451,6 @@ class RunSupervisor:
         if marker:
             self.marker_response = None
             self.marker_seen_at = None
-        if self.state.get("execution_mode") == "interactive":
-            return False
         if (
             not response
             or self.done_response_step_index is None
@@ -425,6 +473,10 @@ class RunSupervisor:
         expected_file_error = self._expected_file_error()
         if self.cancel_path.exists():
             status, error = "canceled", None
+        elif return_code is None:
+            status = "failed"
+            response = None
+            error = "agy exit status was not recorded"
         elif return_code not in {None, 0}:
             status = "failed"
             if response:
@@ -487,6 +539,16 @@ class RunSupervisor:
         expected_file = self.state.get("expected_file")
         if not expected_file:
             return None
+        if "expected_file_baseline" in self.state:
+            return expected_artifact.validation_error(
+                str(expected_file),
+                workspace=(
+                    self.state.get("workspace")
+                    or Path(str(expected_file)).parent
+                ),
+                baseline=self.state.get("expected_file_baseline"),
+                label="expected file",
+            )
         path = Path(str(expected_file))
         try:
             if path.is_file() and path.stat().st_size > 0:
@@ -503,20 +565,35 @@ class RunSupervisor:
         error: str | None = None,
         return_code: int | None = None,
     ) -> None:
-        if result is not None:
-            path = self.directory / "final-result.txt"
-            temporary = self.directory / ".final-result.txt.tmp"
-            temporary.write_text(result, encoding="utf-8")
-            os.replace(temporary, path)
-        runtime.update_state(
+        path = self.directory / "final-result.txt"
+        temporary = self.directory / ".final-result.txt.tmp"
+        if status == "completed" and result is not None:
+            core.write_private_text(temporary, result)
+        finished_at = datetime.now(UTC).isoformat()
+        updated = runtime.update_state(
             self.run_id,
             status=status,
             conversation_id=self.conversation_id,
             return_code=return_code,
             result=result,
             error=error,
-            finished_at=datetime.now(UTC).isoformat(),
+            finished_at=finished_at,
         )
+        if isinstance(updated, dict):
+            self.state = updated
+            if (
+                updated.get("status") != status
+                or updated.get("finished_at") != finished_at
+            ):
+                with suppress(OSError):
+                    temporary.unlink()
+                return
+        if status == "completed" and result is not None:
+            os.replace(temporary, path)
+            path.chmod(0o600)
+        elif status != "completed":
+            with suppress(OSError):
+                path.unlink()
         session_events.append_event(
             self.directory,
             _terminal_event_kind(status),
@@ -543,12 +620,37 @@ def _terminal_event_kind(status: str) -> str:
 
 
 def _marker_is_echoed_task_prompt(text: str, marker_at: int) -> bool:
-    previous_line_end = text.rfind("\n", 0, marker_at)
-    if previous_line_end < 0:
+    previous_text = text[:marker_at]
+    if "\n" not in previous_text:
         return False
-    previous_line_start = text.rfind("\n", 0, previous_line_end)
-    previous_line = text[previous_line_start + 1 : previous_line_end].strip()
-    return previous_line == "Completion marker:"
+    previous_lines = []
+    for line in previous_text.splitlines()[-12:]:
+        normalized = _normalize_task_prompt_line(line)
+        if normalized:
+            previous_lines.append(normalized)
+    if not previous_lines:
+        return False
+    if previous_lines[-1] == "Completion marker:":
+        return True
+    try:
+        heading_index = len(previous_lines) - 1 - previous_lines[::-1].index(
+            "Completion marker:"
+        )
+    except ValueError:
+        return False
+    instruction_lines = previous_lines[heading_index + 1 :]
+    instruction_text = " ".join(instruction_lines).casefold()
+    return (
+        "strongly suggested" in instruction_text
+        or "last line only after" in instruction_text
+        or "full and final response" in instruction_text
+    )
+
+
+def _normalize_task_prompt_line(line: str) -> str:
+    line = line.strip()
+    line = line.lstrip("│┃║>▌▍▎▏| ").strip()
+    return line
 
 
 def _terminal_completion_response_is_meaningful(response: str, marker: str) -> bool:

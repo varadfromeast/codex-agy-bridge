@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
+import stat
 import threading
 import time
 
@@ -124,7 +126,7 @@ def test_sandbox_and_added_directories_participate_in_deduplication(
     assert first["additional_directories"] == [str(extra.resolve())]
 
 
-def test_create_run_returns_notification_metadata(monkeypatch, tmp_path):
+def test_create_run_returns_harness_neutral_wait_metadata(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     process_manager = ConcurrentProcessManager()
@@ -153,15 +155,93 @@ def test_create_run_returns_notification_metadata(monkeypatch, tmp_path):
         conversation_id=None,
     )
 
-    assert state["notification_resource_uri"] == (
-        f"agy-run://{state['run_id']}/notifications"
-    )
-    assert state["wait_tool"] == "codex_agy_bridge_agy_run_wait"
-    assert state["local_wait_tool"] == "agy_run_wait"
+    assert "notification_resource_uri" not in state
+    assert state["wait_tool"] == "agy_run_wait"
+    assert "local_wait_tool" not in state
     assert state["wait_call"] == {
-        "tool": "codex_agy_bridge_agy_run_wait",
+        "tool": "agy_run_wait",
         "arguments": {
             "run_ids": [state["run_id"]],
+            "condition": "any_attention",
+        },
+    }
+
+
+def test_status_projects_legacy_run_with_harness_neutral_wait_metadata(tmp_path):
+    run_id = "legacy-run"
+    store = MemoryRunStore()
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "notification_resource_uri": f"agy-run://{run_id}/notifications",
+            "wait_tool": "codex_agy_bridge_agy_run_wait",
+            "local_wait_tool": "agy_run_wait",
+            "wait_call": {
+                "tool": "codex_agy_bridge_agy_run_wait",
+                "arguments": {
+                    "run_ids": [run_id],
+                    "condition": "any_attention",
+                },
+            },
+        },
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        store=store,
+    )
+
+    status = orchestrator.status(run_id)
+
+    assert status["notification_resource_uri"].endswith("/notifications")
+    assert status["local_wait_tool"] == "agy_run_wait"
+    assert status["wait_tool"] == "agy_run_wait"
+    assert status["wait_call"] == {
+        "tool": "agy_run_wait",
+        "arguments": {
+            "run_ids": [run_id],
+            "condition": "any_attention",
+        },
+    }
+
+
+def test_full_status_projects_legacy_run_with_harness_neutral_wait_metadata(
+    tmp_path,
+):
+    run_id = "legacy-full-run"
+    store = MemoryRunStore()
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "notification_resource_uri": f"agy-run://{run_id}/notifications",
+            "wait_tool": "codex_agy_bridge_agy_run_wait",
+            "local_wait_tool": "agy_run_wait",
+            "wait_call": {
+                "tool": "codex_agy_bridge_agy_run_wait",
+                "arguments": {
+                    "run_ids": [run_id],
+                    "condition": "any_attention",
+                },
+            },
+        },
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        store=store,
+    )
+
+    status = orchestrator.status(run_id, compact=False)
+
+    assert status["notification_resource_uri"].endswith("/notifications")
+    assert status["local_wait_tool"] == "agy_run_wait"
+    assert status["wait_tool"] == "agy_run_wait"
+    assert status["wait_call"] == {
+        "tool": "agy_run_wait",
+        "arguments": {
+            "run_ids": [run_id],
             "condition": "any_attention",
         },
     }
@@ -224,6 +304,105 @@ def test_create_run_opens_visible_auth_session_when_cli_requires_sign_in(
         "reused": False,
     }
     assert opened[0]["workspace"] == workspace
+
+
+def test_create_run_checks_auth_before_model_validation(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class AuthRequiredCli:
+        executable = "/usr/local/bin/agy"
+
+        def authentication_status(self):
+            return {"status": "auth_required", "evidence": "Please sign in"}
+
+        def validate_model(self, _model):
+            pytest.fail("model validation must not run before authentication")
+
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.auth_flow.start_visible_auth_session",
+        lambda **_kwargs: {"tmux_session": "agy-auth-test", "opened": True},
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        cli=AuthRequiredCli(),
+    )
+
+    with pytest.raises(AuthenticationRequiredError):
+        orchestrator.create_run(
+            prompt="work",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+            model="Non-default model",
+        )
+
+
+def test_create_run_rechecks_cached_auth_required_status_on_retry(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    status_calls = 0
+
+    class EventuallyAuthenticatedCli:
+        executable = "/usr/local/bin/agy"
+
+        def capabilities(self):
+            return type(
+                "Capabilities",
+                (),
+                {
+                    "sandbox": True,
+                    "additional_directories": True,
+                    "interactive": True,
+                },
+            )()
+
+        def authentication_status(self):
+            nonlocal status_calls
+            status_calls += 1
+            if status_calls == 1:
+                return {
+                    "status": "auth_required",
+                    "evidence": "Please sign in",
+                }
+            return {"status": "authenticated"}
+
+    monkeypatch.setattr(
+        "codex_agy_bridge._orchestrator.auth_flow.start_visible_auth_session",
+        lambda **_kwargs: {
+            "tmux_session": "agy-auth-test",
+            "opened": True,
+            "reused": False,
+        },
+    )
+    process_manager = ConcurrentProcessManager()
+    process_manager.release_first.set()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        cli=EventuallyAuthenticatedCli(),
+        process_manager=process_manager,
+    )
+
+    with pytest.raises(AuthenticationRequiredError):
+        orchestrator.create_run(
+            prompt="work",
+            workspace=str(workspace),
+            timeout_seconds=30,
+            conversation_id=None,
+        )
+
+    state = orchestrator.create_run(
+        prompt="work",
+        workspace=str(workspace),
+        timeout_seconds=30,
+        conversation_id=None,
+    )
+
+    assert state["status"] == "queued"
+    assert status_calls == 2
 
 
 def test_repeated_auth_required_starts_reuse_one_visible_auth_session(
@@ -473,12 +652,18 @@ def test_foreground_send_text_submits_directly_to_tmux(monkeypatch, tmp_path):
         lambda session, text, *, enter=True: sent.append((session, text, enter)),
     )
 
-    result = orchestration.send_text("run-1", "yes")
+    previous_umask = os.umask(0)
+    try:
+        result = orchestration.send_text("run-1", "yes")
+    finally:
+        os.umask(previous_umask)
 
     assert sent == [("agy-target", "yes", True)]
     assert not (state_root / "runs" / "run-1" / "interactive-input.json").exists()
     events = state_root / "runs" / "run-1" / "interactive-input-events.jsonl"
     assert '"delivery":"foreground_mcp_submit"' in events.read_text()
+    assert stat.S_IMODE(events.stat().st_mode) == 0o600
+    assert stat.S_IMODE(events.parent.stat().st_mode) == 0o700
     notification_events = session_events.read_events(state_root / "runs" / "run-1")
     assert [event["kind"] for event in notification_events[-2:]] == [
         "mcp_input_submitted",
@@ -687,6 +872,101 @@ def test_observe_merges_run_events_transcript_cursor_and_provider_health(
     assert observed["terminal"] == {"tail_available": False}
 
 
+def test_observe_cursor_stops_at_last_delivered_event_page(tmp_path):
+    run_id = "run-observe-pages"
+    store = MemoryRunStore()
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "conversation_id": None,
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+    run_dir = orchestrator.run_dir(run_id)
+    first = session_events.append_event(run_dir, "run_started")
+    updates = [
+        session_events.append_event(run_dir, "terminal_output_observed")
+        for _ in range(101)
+    ]
+
+    page = orchestrator.observe(
+        [run_id],
+        after={run_id: {"event_id": first["run_seq"]}},
+    )["runs"][run_id]
+
+    assert page["events"] == updates[:100]
+    assert page["cursor"]["event_id"] == updates[99]["run_seq"]
+    assert page["cursor"]["event_key"] == updates[99]["event_id"]
+    assert page["has_more_events"] is True
+
+    final = orchestrator.observe(
+        [run_id],
+        after={run_id: page["cursor"]},
+    )["runs"][run_id]
+
+    assert final["events"] == updates[100:]
+    assert final["cursor"]["event_id"] == updates[-1]["run_seq"]
+    assert final["cursor"]["event_key"] == updates[-1]["event_id"]
+    assert final["has_more_events"] is False
+
+
+def test_observe_transcript_cursor_stops_at_last_delivered_step(
+    monkeypatch,
+    tmp_path,
+):
+    run_id = "run-observe-transcript-pages"
+    conversation_id = "conversation-pages"
+    brain = tmp_path / "brain"
+    monkeypatch.setattr(core, "BRAIN_DIR", brain)
+    store = MemoryRunStore()
+    store.save_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "conversation_id": conversation_id,
+        },
+    )
+    transcript = core.transcript_path(conversation_id)
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "step_index": index,
+                    "source": "MODEL",
+                    "type": "RUN_COMMAND",
+                    "status": "DONE",
+                    "content": f"step {index}",
+                }
+            )
+            for index in range(51)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+
+    page = orchestrator.observe([run_id])["runs"][run_id]
+
+    assert [step["step_index"] for step in page["transcript"]["steps"]] == list(
+        range(50)
+    )
+    assert page["cursor"]["transcript_step"] == 49
+    assert page["transcript"]["has_more"] is True
+
+    final = orchestrator.observe(
+        [run_id],
+        after={run_id: page["cursor"]},
+    )["runs"][run_id]
+
+    assert [step["step_index"] for step in final["transcript"]["steps"]] == [50]
+    assert final["cursor"]["transcript_step"] == 50
+    assert final["transcript"]["has_more"] is False
+
+
 def test_observe_can_include_bounded_terminal_tail(monkeypatch, tmp_path):
     state_root = isolate_state_root(monkeypatch, tmp_path)
     mem_store = MemoryRunStore()
@@ -879,7 +1159,7 @@ def test_cancel_emits_cancel_requested(tmp_path):
     ]
 
 
-def test_cancel_preserves_runner_terminal_state_during_grace(monkeypatch, tmp_path):
+def test_cancel_rejects_late_completion_during_grace(monkeypatch, tmp_path):
     store = MemoryRunStore()
     store.save_run(
         "run-1",
@@ -916,33 +1196,42 @@ def test_cancel_preserves_runner_terminal_state_during_grace(monkeypatch, tmp_pa
         finish_during_sleep,
     )
 
-    class FailIfKilled(ProcessManager):
+    class RecordingProcessManager(ProcessManager):
+        def __init__(self):
+            self.signals = []
+
         def spawn(self, args, cwd, stdout, stderr):
             raise AssertionError("spawn is not expected")
 
         def is_alive(self, pid):
-            return True
+            return False
 
         def killpg(self, gpid, sig):
-            raise AssertionError("cancel grace should avoid process termination")
+            self.signals.append((gpid, sig))
 
         def kill(self, pid, sig):
-            raise AssertionError("cancel grace should avoid process termination")
+            self.signals.append((pid, sig))
 
+    process_manager = RecordingProcessManager()
     orchestrator = RunnerOrchestrator(
         state_root=tmp_path / "state",
         store=store,
-        process_manager=FailIfKilled(),
+        process_manager=process_manager,
         session_factory=lambda _state, _run_dir: session,
     )
 
     result = orchestrator.cancel("run-1")
 
-    assert result["status"] == "completed"
-    assert result["result"] == "finished first"
-    assert session.is_alive() is True
+    assert result["status"] == "canceled"
+    assert result.get("result") is None
+    assert session.is_alive() is False
+    assert process_manager.signals == [
+        (123, signal.SIGTERM),
+        (123, signal.SIGKILL),
+    ]
     assert [event["kind"] for event in session_events.read_events(run_dir)] == [
-        "cancel_requested"
+        "cancel_requested",
+        "run_canceled",
     ]
 
 
@@ -1369,6 +1658,100 @@ def test_start_always_creates_tmux_session(monkeypatch, tmp_path):
     assert state["tmux_session"]
 
 
+def test_start_waits_for_terminal_startup_failure(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    store = MemoryRunStore()
+
+    class FailedStartupProcessManager(ProcessManager):
+        def spawn(self, args, cwd, stdout, stderr):
+            run_id = next(iter(store.runs))
+            store.update_run(
+                run_id,
+                {
+                    "status": "failed",
+                    "error": "Antigravity child exited before startup readiness",
+                },
+            )
+            return type("Process", (), {"pid": 4321})()
+
+        def is_alive(self, pid):
+            return False
+
+        def killpg(self, gpid, sig):
+            pass
+
+        def kill(self, pid, sig):
+            pass
+
+    orch = RunnerOrchestrator(
+        state_root=state_root,
+        store=store,
+        process_manager=FailedStartupProcessManager(),
+        startup_wait_seconds=0.1,
+    )
+    monkeypatch.setattr(orchestration, "conversation_for_workspace", lambda _root: None)
+
+    state = orch.create_run(
+        prompt="Review pull request",
+        workspace=str(workspace),
+        timeout_seconds=900,
+        conversation_id=None,
+    )
+
+    assert state["status"] == "failed"
+    assert state["error"] == "Antigravity child exited before startup readiness"
+
+
+def test_start_waits_for_running_startup_confirmation(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_root = isolate_state_root(monkeypatch, tmp_path)
+    store = MemoryRunStore()
+
+    class ReadyStartupProcessManager(ProcessManager):
+        def spawn(self, args, cwd, stdout, stderr):
+            run_id = next(iter(store.runs))
+            store.update_run(run_id, {"status": "launching"})
+            store.update_run(
+                run_id,
+                {
+                    "status": "running",
+                    "agy_pid": 2468,
+                    "tmux_session": "agy-ready",
+                },
+            )
+            return type("Process", (), {"pid": 4321})()
+
+        def is_alive(self, pid):
+            return True
+
+        def killpg(self, gpid, sig):
+            pass
+
+        def kill(self, pid, sig):
+            pass
+
+    orch = RunnerOrchestrator(
+        state_root=state_root,
+        store=store,
+        process_manager=ReadyStartupProcessManager(),
+        startup_wait_seconds=0.1,
+    )
+    monkeypatch.setattr(orchestration, "conversation_for_workspace", lambda _root: None)
+
+    state = orch.create_run(
+        prompt="Review pull request",
+        workspace=str(workspace),
+        timeout_seconds=900,
+        conversation_id=None,
+    )
+
+    assert state["status"] == "running"
+    assert state["agy_pid"] == 2468
+
+
 class ConcurrentProcessManager(ProcessManager):
     def __init__(self):
         self.spawn_count = 0
@@ -1717,6 +2100,28 @@ def test_result_lists_files_mentioned_by_final_response(tmp_path):
     ]
 
 
+def test_result_preview_stops_before_split_utf8_character(tmp_path):
+    response = ("a" * 4095) + "éz"
+    store = MemoryRunStore()
+    store.save_run(
+        "run",
+        {
+            "run_id": "run",
+            "status": "completed",
+            "conversation_id": None,
+            "result": response,
+            "error": None,
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
+
+    result = orchestrator.result("run")["result"]
+
+    assert result["preview"] == "a" * 4095
+    assert result["total_bytes"] == len(response.encode("utf-8"))
+    assert result["complete"] is False
+
+
 def test_result_read_uses_independent_byte_offsets(tmp_path):
     store = MemoryRunStore()
     store.save_run(
@@ -1866,7 +2271,7 @@ def test_result_read_rejects_non_terminal_runs(tmp_path):
         orchestrator.result_read("run")
 
 
-def test_result_read_handles_utf8_boundaries_with_replacement(tmp_path):
+def test_result_read_returns_utf8_safe_continuation_offsets(tmp_path):
     store = MemoryRunStore()
     store.save_run(
         "run",
@@ -1884,12 +2289,28 @@ def test_result_read_handles_utf8_boundaries_with_replacement(tmp_path):
     orchestrator = RunnerOrchestrator(state_root=tmp_path, store=store)
 
     first = orchestrator.result_read("run", offset_bytes=0, max_bytes=2)
-    second = orchestrator.result_read("run", offset_bytes=2, max_bytes=2)
+    assert first["content"] == "a"
+    assert first["returned_bytes"] == 1
+    assert first["next_offset_bytes"] == 1
 
-    assert first["content"] == "a�"
-    assert first["returned_bytes"] == 2
-    assert second["content"] == "�z"
+    second = orchestrator.result_read(
+        "run",
+        offset_bytes=first["next_offset_bytes"],
+        max_bytes=2,
+    )
+    assert second["content"] == "é"
     assert second["returned_bytes"] == 2
+    assert second["next_offset_bytes"] == 3
+
+    final = orchestrator.result_read(
+        "run",
+        offset_bytes=second["next_offset_bytes"],
+        max_bytes=2,
+    )
+
+    assert final["content"] == "z"
+    assert final["complete"] is True
+    assert "".join(chunk["content"] for chunk in (first, second, final)) == "aéz"
 
 
 def test_concurrent_goal_targets_preserve_both_registrations(tmp_path):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from codex_agy_bridge import core, session_events, terminal
@@ -151,6 +153,88 @@ def test_run_control_snapshot_running_run_started_event_becomes_working(tmp_path
 
     assert snapshot["activity_state"] == "working"
     assert snapshot["attention"]["required"] is False
+
+
+def test_run_control_snapshot_projects_launching_as_starting_without_input(tmp_path):
+    state_root = tmp_path / "state"
+    run_id = "run-launching"
+    core.atomic_write_json(
+        core.state_path(run_id, state_root=state_root),
+        {
+            "run_id": run_id,
+            "status": "launching",
+            "execution_surface": "foreground",
+            "human_attachable": True,
+            "tmux_session": "agy-launching",
+        },
+    )
+
+    snapshot = RunControlSnapshot.from_run(
+        run_id,
+        state_root=state_root,
+        detect_prompts=False,
+    )
+
+    assert snapshot["lifecycle_status"] == "launching"
+    assert snapshot["activity_state"] == "starting"
+    assert snapshot["can_send_text"] is False
+
+
+def test_run_control_snapshot_uses_newest_events_after_long_history(tmp_path):
+    state_root = tmp_path / "state"
+    run_id = "run-long-history"
+    run_dir = core.run_dir(run_id, state_root=state_root)
+    core.atomic_write_json(
+        core.state_path(run_id, state_root=state_root),
+        {"run_id": run_id, "status": "running"},
+    )
+    lines = []
+    for sequence in range(1, 10_001):
+        run_seq = f"{sequence:012d}"
+        lines.append(
+            json.dumps(
+                {
+                    "event_id": f"{run_id}:{run_seq}",
+                    "run_id": run_id,
+                    "run_seq": run_seq,
+                    "kind": "terminal_output_observed",
+                    "observed": {"activity_state": "working"},
+                }
+            )
+        )
+    latest_seq = "000000010001"
+    lines.append(
+        json.dumps(
+            {
+                "event_id": f"{run_id}:{latest_seq}",
+                "run_id": run_id,
+                "run_seq": latest_seq,
+                "kind": "needs_attention",
+                "category": "approval_prompt",
+                "observed": {
+                    "activity_state": "awaiting_user",
+                    "prompt": "Approve the current command?",
+                    "suggested_inputs": ["y", "n"],
+                },
+            }
+        )
+    )
+    (run_dir / "session-events.jsonl").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "notify.seq").write_text(latest_seq + "\n", encoding="utf-8")
+
+    snapshot = RunControlSnapshot.from_run(
+        run_id,
+        state_root=state_root,
+        detect_prompts=False,
+    )
+
+    assert snapshot["latest_event_key"] == f"{run_id}:{latest_seq}"
+    assert snapshot["activity_state"] == "awaiting_user"
+    assert snapshot["attention"]["required"] is True
+    assert snapshot["attention"]["prompt"] == "Approve the current command?"
 
 
 def test_run_control_snapshot_ignores_stale_terminal_prompt(tmp_path):

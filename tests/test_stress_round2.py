@@ -217,14 +217,13 @@ def test_stress_26_corrupt_active_sentinel_does_not_hide_valid_runs(tmp_path):
     assert not (tmp_path / "active" / "missing").exists()
 
 
-def test_stress_27_terminal_state_is_monotonic(tmp_path):
+def test_stress_27_terminal_state_is_monotonic_without_caller_opt_in(tmp_path):
     store = DiskRunStore(tmp_path)
     store.save_run("run", {"run_id": "run", "status": "canceled"})
 
     state = store.update_run(
         "run",
         {"status": "completed", "result": "late result"},
-        require_active=True,
     )
 
     assert state["status"] == "canceled"

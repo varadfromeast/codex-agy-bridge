@@ -151,6 +151,7 @@ def test_launch_process_uses_tmux(monkeypatch, tmp_path):
         "run",
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
+    monkeypatch.setattr(terminal, "wait_for_child_pid", lambda *_args, **_kwargs: 2468)
 
     process = runner.launch_process(
         {"run_id": "run-1", "tmux_session": "agy-target"},
@@ -158,7 +159,7 @@ def test_launch_process_uses_tmux(monkeypatch, tmp_path):
         workspace=str(tmp_path),
     )
 
-    assert process is None
+    assert process == 2468
     assert calls[0][0] == [
         "tmux",
         "new-session",
@@ -171,7 +172,8 @@ def test_launch_process_uses_tmux(monkeypatch, tmp_path):
         "-c",
         calls[0][0][-1],
     ]
-    assert "/usr/local/bin/agy --print work" in calls[0][0][-1]
+    assert "exec /usr/local/bin/agy --print work" in calls[0][0][-1]
+    assert "agy.start" in calls[0][0][-1]
     assert "tail -n +1 -F" in calls[0][0][-1]
     assert "agy.exit-code.tmp" in calls[0][0][-1]
     assert "agy.exit-code" in calls[0][0][-1]

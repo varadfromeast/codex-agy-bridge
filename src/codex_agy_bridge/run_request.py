@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-from codex_agy_bridge import core
+from codex_agy_bridge import core, expected_artifact, harness_contract
 from codex_agy_bridge.exceptions import WorkspaceAccessError
 from codex_agy_bridge.state import AgentMode, ExecutionMode, ExecutionSurface, RunState
 from codex_agy_bridge.task_packet import format_task_packet
@@ -42,6 +42,7 @@ class RunRequest:
     goal_id: str | None
     target_name: str | None
     expected_file: str | None
+    expected_file_baseline: expected_artifact.ArtifactFingerprint | None
     request_key: str
 
     @classmethod
@@ -104,6 +105,11 @@ class RunRequest:
             expected_file,
             workspace=root,
         )
+        expected_file_baseline = (
+            expected_artifact.capture(normalized_expected_file)
+            if normalized_expected_file is not None
+            else None
+        )
         needs_visible_cli = (
             execution_mode == "interactive" or execution_surface == "foreground"
         )
@@ -155,6 +161,7 @@ class RunRequest:
             goal_id=goal_id,
             target_name=target_name,
             expected_file=normalized_expected_file,
+            expected_file_baseline=expected_file_baseline,
             request_key=request_key,
         )
 
@@ -178,6 +185,10 @@ class RunRequest:
                 artifact_dir=artifact_dir,
                 expected_file=self.expected_file,
             )
+        wait_call = harness_contract.wait_call(
+            [run_id],
+            condition="any_attention",
+        )
         return {
             "run_id": run_id,
             "status": "queued",
@@ -186,6 +197,7 @@ class RunRequest:
             "workspace": str(self.workspace),
             "artifact_dir": artifact_dir or "",
             "expected_file": self.expected_file,
+            "expected_file_baseline": self.expected_file_baseline,
             "prompt": effective_prompt,
             "prompt_preview": self.prompt[:240],
             "completion_marker": marker,
@@ -204,16 +216,8 @@ class RunRequest:
             "goal_id": self.goal_id,
             "target_name": self.target_name,
             "request_key": self.request_key,
-            "notification_resource_uri": f"agy-run://{run_id}/notifications",
-            "wait_tool": "codex_agy_bridge_agy_run_wait",
-            "local_wait_tool": "agy_run_wait",
-            "wait_call": {
-                "tool": "codex_agy_bridge_agy_run_wait",
-                "arguments": {
-                    "run_ids": [run_id],
-                    "condition": "any_attention",
-                },
-            },
+            "wait_tool": wait_call["tool"],
+            "wait_call": wait_call,
             "session_label": session_label,
             "tmux_session": tmux_session,
             "runner_pid": None,

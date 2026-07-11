@@ -11,7 +11,7 @@ from codex_agy_bridge import terminal
 class ExecutionSession(Protocol):
     """Interface abstraction for running an agent target session."""
 
-    def start(self, run_id: str, command: list[str], workspace: Path) -> None:
+    def start(self, run_id: str, command: list[str], workspace: Path) -> int | None:
         """Start the execution session.
 
         Args:
@@ -61,6 +61,7 @@ class TmuxSession:
         session_name: str | None = None,
         execution_mode: str = "print",
         execution_surface: str = "headless",
+        defer_child_start: bool = False,
     ) -> None:
         """Initialize TmuxSession.
 
@@ -72,8 +73,9 @@ class TmuxSession:
         self.session_name = session_name
         self.execution_mode = execution_mode
         self.execution_surface = execution_surface
+        self.defer_child_start = defer_child_start
 
-    def start(self, run_id: str, command: list[str], workspace: Path) -> None:
+    def start(self, run_id: str, command: list[str], workspace: Path) -> int:
         """Spawn the tmux session and pipe stream data."""
         self.session_name = self.session_name or terminal.session_name(run_id)
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +89,13 @@ class TmuxSession:
             stderr_log=self.run_dir / "agy.stderr.log",
             execution_mode=self.execution_mode,
             execution_surface=self.execution_surface,
+            defer_child_start=self.defer_child_start,
         )
+        child_pid = terminal.wait_for_child_pid(
+            self.session_name,
+            self.run_dir / "agy.pid",
+        )
+        return child_pid
 
     def kill(self) -> None:
         """Kill the tmux session."""

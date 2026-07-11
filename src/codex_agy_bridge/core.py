@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, BinaryIO, TextIO, TypeAlias
 
 from codex_agy_bridge.exceptions import RunNotFoundError
 from codex_agy_bridge.state import (
@@ -85,14 +85,60 @@ def state_path(run_id: str, state_root: Path | None = None) -> Path:
     return run_dir(run_id, state_root) / "state.json"
 
 
+def ensure_private_directory(path: Path) -> Path:
+    """Create or tighten one bridge-owned directory to owner-only access."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
+    return path
+
+
+def open_private_binary_append(path: Path) -> BinaryIO:
+    """Open one bridge-owned append log with owner-only access."""
+    ensure_private_directory(path.parent)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        path.chmod(0o600)
+        return os.fdopen(descriptor, "ab")
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def open_private_text_append(path: Path) -> TextIO:
+    """Open one bridge-owned UTF-8 append log with owner-only access."""
+    ensure_private_directory(path.parent)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        path.chmod(0o600)
+        return os.fdopen(descriptor, "a", encoding="utf-8")
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def write_private_text(path: Path, content: str) -> None:
+    """Replace one bridge-owned UTF-8 file with owner-only access."""
+    ensure_private_directory(path.parent)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        path.chmod(0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except Exception:
+        with suppress(OSError):
+            os.close(descriptor)
+        raise
+
+
 def atomic_write_json(path: Path, value: JSONValue) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
         os.replace(temporary, path)
+        path.chmod(0o600)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -112,6 +158,60 @@ def update_state(
     from codex_agy_bridge.store import DiskRunStore
 
     return DiskRunStore(state_root or STATE_ROOT).update_run(run_id, changes)
+
+
+def claim_run(
+    run_id: str,
+    state_root: Path | None = None,
+    **changes: Any,
+) -> dict[str, Any]:
+    """Atomically claim a queued Run for detached worker launch."""
+    from codex_agy_bridge import run_lifecycle
+    from codex_agy_bridge.store import DiskRunStore
+
+    return dict(
+        run_lifecycle.claim(
+            DiskRunStore(state_root or STATE_ROOT),
+            run_id,
+            changes,
+        )
+    )
+
+
+def mark_run_running(
+    run_id: str,
+    state_root: Path | None = None,
+    **changes: Any,
+) -> dict[str, Any]:
+    """Atomically confirm a claimed Run's live Execution Session."""
+    from codex_agy_bridge import run_lifecycle
+    from codex_agy_bridge.store import DiskRunStore
+
+    return dict(
+        run_lifecycle.mark_running(
+            DiskRunStore(state_root or STATE_ROOT),
+            run_id,
+            changes,
+        )
+    )
+
+
+def acknowledge_cancel(
+    run_id: str,
+    state_root: Path | None = None,
+    **changes: Any,
+) -> dict[str, Any]:
+    """Atomically make an active cancellation terminal."""
+    from codex_agy_bridge import run_lifecycle
+    from codex_agy_bridge.store import DiskRunStore
+
+    return dict(
+        run_lifecycle.acknowledge_cancel(
+            DiskRunStore(state_root or STATE_ROOT),
+            run_id,
+            changes,
+        )
+    )
 
 
 def load_goal(goal_id: str, state_root: Path | None = None) -> GoalState:
@@ -330,8 +430,8 @@ def conversation_for_prompt_after(
 def _user_content_matches_prompt(content: str, prompt: str) -> bool:
     if content == prompt:
         return True
-    match = re.fullmatch(
-        r"\s*<USER_REQUEST>(?P<prompt>.*)</USER_REQUEST>\s*",
+    match = re.match(
+        r"\s*<USER_REQUEST>\n?(?P<prompt>.*?)\n?</USER_REQUEST>(?:\s|$)",
         content,
         re.S,
     )
@@ -412,6 +512,41 @@ def compact_steps(
         include_content=include_content,
         max_content_chars=max_content_chars,
     )
+
+
+def compact_step_page(
+    conversation_id: str,
+    *,
+    after_step: int = -1,
+    limit: int = 50,
+    include_content: bool = False,
+    max_content_chars: int = 500,
+) -> dict[str, Any]:
+    """Return the oldest unread bounded page without skipping later steps."""
+    page_size = max(1, min(limit, 200))
+    unread = [
+        step
+        for step in read_steps(conversation_id)
+        if isinstance(step.get("step_index"), int)
+        and int(step["step_index"]) > after_step
+    ]
+    page_records = unread[: page_size + 1]
+    has_more = len(page_records) > page_size
+    steps = compact_step_records(
+        page_records[:page_size],
+        after_step=after_step,
+        limit=page_size,
+        include_content=include_content,
+        max_content_chars=max_content_chars,
+    )
+    next_after = after_step
+    if steps and isinstance(steps[-1].get("step_index"), int):
+        next_after = int(steps[-1]["step_index"])
+    return {
+        "steps": steps,
+        "next_after": next_after,
+        "has_more": has_more,
+    }
 
 
 def compact_step_records(

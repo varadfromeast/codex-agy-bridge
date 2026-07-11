@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
@@ -107,6 +108,13 @@ class SessionEvent(TypedDict, total=False):
     tmux_session: str | None
 
 
+class EventPage(TypedDict):
+    events: list[SessionEvent]
+    next_after: str | None
+    head: str | None
+    has_more: bool
+
+
 def append_event(
     run_dir: Path,
     kind: str,
@@ -120,8 +128,8 @@ def append_event(
     payload = dict(payload or {})
     observed = dict(payload.pop("observed", {}))
     observed.setdefault("activity_state", EVENT_ACTIVITY_STATES[kind])
-    run_dir.mkdir(parents=True, exist_ok=True)
-    with FileLock(str(run_dir / EVENTS_LOCK), timeout=10):
+    core.ensure_private_directory(run_dir)
+    with FileLock(str(run_dir / EVENTS_LOCK), timeout=10, mode=0o600):
         run_seq = _next_run_seq(run_dir)
         event = cast(
             SessionEvent,
@@ -143,8 +151,8 @@ def append_event(
             },
         )
         line = json.dumps(event, ensure_ascii=False, sort_keys=True)
-        with (run_dir / EVENTS_FILE).open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        with core.open_private_binary_append(run_dir / EVENTS_FILE) as handle:
+            handle.write((line + "\n").encode("utf-8"))
         _atomic_write_text(run_dir / NOTIFY_SEQ, run_seq + "\n")
         return event
 
@@ -160,7 +168,7 @@ def latest_event_id(run_dir: Path) -> str | None:
 
 def latest_event_key(run_dir: Path) -> str | None:
     """Return the latest globally keyable event id for a run."""
-    for event in reversed(read_events(run_dir, limit=None)):
+    for event in read_recent_events(run_dir, limit=1):
         event_id = event.get("event_id")
         if isinstance(event_id, str) and event_id:
             return event_id if ":" in event_id else f"{run_dir.name}:{event_id}"
@@ -182,28 +190,104 @@ def read_events(
     after_run_seq = _cursor_to_run_seq(after_event_id)
     path = run_dir / EVENTS_FILE
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        handle = path.open(encoding="utf-8")
     except OSError:
         return []
     events: list[SessionEvent] = []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(value, dict):
-            continue
-        run_seq = _event_run_seq(value)
-        if run_seq is None:
-            continue
-        if after_run_seq is not None and run_seq <= after_run_seq:
-            continue
-        events.append(cast(SessionEvent, value))
-        if limit is not None and len(events) >= limit:
-            break
+    with handle:
+        for line in handle:
+            event = _event_from_line(line)
+            if event is None:
+                continue
+            run_seq = _event_run_seq(event)
+            if (
+                after_run_seq is not None
+                and run_seq is not None
+                and run_seq <= after_run_seq
+            ):
+                continue
+            events.append(event)
+            if limit is not None and len(events) >= limit:
+                break
     return events
+
+
+def read_recent_events(run_dir: Path, *, limit: int = 100) -> list[SessionEvent]:
+    """Read the newest durable events with bounded memory use."""
+    if limit < 1:
+        return []
+    path = run_dir / EVENTS_FILE
+    try:
+        handle = path.open(encoding="utf-8")
+    except OSError:
+        return []
+    events: deque[SessionEvent] = deque(maxlen=limit)
+    with handle:
+        for line in handle:
+            event = _event_from_line(line)
+            if event is not None:
+                events.append(event)
+    return list(events)
+
+
+def read_event_page(
+    run_dir: Path,
+    *,
+    after_event_id: str | None = None,
+    kinds: Collection[str] | None = None,
+    limit: int = 100,
+) -> EventPage:
+    """Read one filtered page and keep its cursor behind undelivered events."""
+    head = latest_event_id(run_dir)
+    if limit < 1:
+        return {
+            "events": [],
+            "next_after": after_event_id,
+            "head": head,
+            "has_more": False,
+        }
+    after_run_seq = _cursor_to_run_seq(after_event_id)
+    path = run_dir / EVENTS_FILE
+    try:
+        handle = path.open(encoding="utf-8")
+    except OSError:
+        return {
+            "events": [],
+            "next_after": after_event_id,
+            "head": head,
+            "has_more": False,
+        }
+    events: list[SessionEvent] = []
+    has_more = False
+    with handle:
+        for line in handle:
+            event = _event_from_line(line)
+            if event is None:
+                continue
+            run_seq = _event_run_seq(event)
+            if (
+                after_run_seq is not None
+                and run_seq is not None
+                and run_seq <= after_run_seq
+            ):
+                continue
+            if kinds is not None and event.get("kind") not in kinds:
+                continue
+            if len(events) >= limit:
+                has_more = True
+                break
+            events.append(event)
+    next_after = after_event_id
+    if events:
+        cursor = events[-1].get("event_id") or events[-1].get("run_seq")
+        if isinstance(cursor, str | int):
+            next_after = str(cursor)
+    return {
+        "events": events,
+        "next_after": next_after,
+        "head": head,
+        "has_more": has_more,
+    }
 
 
 def _next_run_seq(run_dir: Path) -> str:
@@ -246,12 +330,26 @@ def _event_run_seq(event: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _event_from_line(line: str) -> SessionEvent | None:
+    if not line.strip():
+        return None
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or _event_run_seq(value) is None:
+        return None
+    return cast(SessionEvent, value)
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    core.ensure_private_directory(path.parent)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(content, encoding="utf-8")
+        temporary.chmod(0o600)
         os.replace(temporary, path)
+        path.chmod(0o600)
     finally:
         if temporary.exists():
             temporary.unlink()

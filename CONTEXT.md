@@ -23,6 +23,12 @@ interactive mode.
 The live process container for a Run. Production uses a persistent tmux
 session; tests can use an in-memory adapter through the same interface.
 
+Every production Run uses Antigravity's interactive CLI in a visible,
+human-attachable tmux session. A Run still represents one requested response
+turn: once the transcript records a stable completed planner response, the
+bridge persists it as the Run result and closes that execution session.
+Further conversation continues in a new Run using the same conversation ID.
+
 ## Goal
 
 A durable parent record that groups named Run targets and supplies inherited
@@ -33,14 +39,35 @@ execution policy plus a parallelism limit.
 Antigravity's durable model-side context identity. Continuation always uses an
 exact conversation ID; separate conversations do not share native context.
 
+## Calling Harness
+
+The MCP agent host that starts, observes, and continues Runs. The Calling
+Harness may be Codex or any other client that follows the Harness Contract.
+
+## Harness Contract
+
+The harness-neutral operation names, arguments, and continuation guidance a
+Calling Harness uses to control Runs and retrieve results.
+
+## Run Lifecycle
+
+The legal, monotonic progression of a Run through queued, launching, running,
+cancel_requested, and one terminal state. Launching means a worker has claimed
+the Run but has not yet confirmed its Execution Session as running.
+
+## Expected Artifact
+
+A workspace-contained file that a Run must create or update before the file can
+satisfy completion. An unchanged file from before Run reservation is stale.
+
 ## Control Plane
 
 The bridge control plane is responsible for answering one question reliably:
 what is this Run doing right now? Do not rely on raw lifecycle `status` alone.
 Use these separate concepts:
 
-- `lifecycle_status`: queued, running, cancel_requested, completed, failed, or
-  canceled.
+- `lifecycle_status`: queued, launching, running, cancel_requested, completed,
+  failed, or canceled.
 - `activity_state`: starting, working, awaiting_user, awaiting_mcp_input,
   waiting_for_response, possibly_stalled, terminal, or idle.
 - `attention`: a structured object describing whether Codex or a human should

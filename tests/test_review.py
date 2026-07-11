@@ -66,10 +66,8 @@ def test_review_commit_starts_tagged_expected_file_run(tmp_path):
         "schema": "agy.review.v1",
     }
     assert result["next"] == {
-        "result_tool": "codex_agy_bridge_agy_review_result",
-        "wait_tool": "codex_agy_bridge_agy_run_wait",
-        "local_result_tool": "agy_review_result",
-        "local_wait_tool": "agy_run_wait",
+        "result_tool": "agy_review_result",
+        "wait_tool": "agy_run_wait",
         "wait_conditions": [
             "all_complete",
             "all_completed",
@@ -90,7 +88,7 @@ def test_review_commit_starts_tagged_expected_file_run(tmp_path):
         "max_wait_seconds": 120,
         "poll_interval_seconds": 60,
         "wait_call": {
-            "tool": "codex_agy_bridge_agy_run_wait",
+            "tool": "agy_run_wait",
             "arguments": {
                 "run_ids": [result["run_id"]],
                 "condition": "any_terminal",
@@ -98,7 +96,7 @@ def test_review_commit_starts_tagged_expected_file_run(tmp_path):
             },
         },
         "result_call": {
-            "tool": "codex_agy_bridge_agy_review_result",
+            "tool": "agy_review_result",
             "arguments": {"run_id": result["run_id"]},
         },
         "advice": (
@@ -136,6 +134,77 @@ def test_review_branch_prompt_includes_dirty_tree_contract(tmp_path):
     assert "Review current branch work" in state["prompt"]
     assert "base ref: main" in state["prompt"]
     assert "staged, unstaged, and untracked" in state["prompt"]
+
+
+def test_review_commit_rejects_default_output_symlink_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / ".agy-bridge-artifacts").symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        process_manager=FakeProcessManager(),
+        cli=FakeCli(),
+    )
+
+    with pytest.raises(ValueError, match="inside the workspace"):
+        orchestrator.review_commit(
+            commit="abc123",
+            issue="Reject redirected review artifacts",
+            workspace=str(workspace),
+        )
+    assert not (outside / "reviews").exists()
+
+
+def test_review_result_rejects_valid_artifact_unchanged_since_run_reservation(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output_file = workspace / "review.json"
+    output_file.write_text(
+        json.dumps(
+            {
+                "schema": "agy.review.v1",
+                "verdict": "accepted",
+                "findings": [],
+                "blockers": [],
+                "files_inspected": ["src/codex_agy_bridge/review.py"],
+                "commands_run": ["pytest tests/test_review.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        process_manager=FakeProcessManager(),
+        cli=FakeCli(),
+    )
+    launched = orchestrator.review_commit(
+        commit="abc123",
+        issue="Reject stale review artifacts",
+        workspace=str(workspace),
+        output_file=str(output_file),
+    )
+    run_id = launched["run_id"]
+    orchestrator.update_state(run_id, status="launching")
+    orchestrator.update_state(run_id, status="running")
+    orchestrator.update_state(run_id, status="completed")
+
+    result = orchestrator.review_result(run_id)
+
+    assert result["status"] == "failed_validation"
+    assert result["summary"] is None
+    assert result["review"] is None
+    assert result["artifact"]["exists"] is True
+    assert result["artifact"]["valid"] is False
+    assert result["validation_errors"] == [
+        "review artifact was not created or updated by this Run"
+    ]
 
 
 def test_review_result_returns_summary_for_valid_artifact(tmp_path):
@@ -251,7 +320,11 @@ def test_review_result_returns_artifact_location_for_malformed_json(tmp_path):
     assert "parse_error" in result["artifact"]
 
 
-def test_review_result_reads_valid_artifact_even_if_run_state_is_still_active(tmp_path):
+@pytest.mark.parametrize("lifecycle_status", ["launching", "running"])
+def test_review_result_does_not_publish_valid_artifact_while_run_is_active(
+    tmp_path,
+    lifecycle_status,
+):
     output_file = tmp_path / "review.json"
     output_file.write_text(
         json.dumps(
@@ -271,7 +344,7 @@ def test_review_result_reads_valid_artifact_even_if_run_state_is_still_active(tm
         "run-review",
         {
             "run_id": "run-review",
-            "status": "running",
+            "status": lifecycle_status,
             "task_kind": "review_commit",
             "review_schema": "agy.review.v1",
             "review_output_file": str(output_file),
@@ -282,20 +355,72 @@ def test_review_result_reads_valid_artifact_even_if_run_state_is_still_active(tm
 
     result = orchestrator.review_result("run-review")
 
-    assert result["status"] == "completed"
-    assert result["summary"]["verdict"] == "accepted"
-    assert result["artifact"]["valid"] is True
-    assert result["run"]["status"] == "running"
+    assert result["status"] == lifecycle_status
+    assert result["summary"] is None
+    assert result["review"] is None
+    assert result["artifact"]["exists"] is True
+    assert result["artifact"]["valid"] is False
+    assert result["run"]["status"] == lifecycle_status
 
 
-def test_review_result_reports_active_review_run_without_validation_failure(tmp_path):
+@pytest.mark.parametrize("lifecycle_status", ["failed", "canceled"])
+def test_review_result_preserves_terminal_failure_with_valid_stale_artifact(
+    tmp_path,
+    lifecycle_status,
+):
+    output_file = tmp_path / "review.json"
+    output_file.write_text(
+        json.dumps(
+            {
+                "schema": "agy.review.v1",
+                "verdict": "accepted",
+                "findings": [],
+                "blockers": [],
+                "files_inspected": ["src/codex_agy_bridge/review.py"],
+                "commands_run": ["pytest tests/test_review.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = MemoryRunStore()
+    store.save_run(
+        "run-review",
+        {
+            "run_id": "run-review",
+            "status": lifecycle_status,
+            "task_kind": "review_commit",
+            "review_schema": "agy.review.v1",
+            "review_output_file": str(output_file),
+            "error": "review execution did not complete",
+        },
+    )
+    orchestrator = RunnerOrchestrator(state_root=tmp_path / "state", store=store)
+
+    result = orchestrator.review_result("run-review")
+
+    assert result["status"] == lifecycle_status
+    assert result["summary"] is None
+    assert result["review"] is None
+    assert result["artifact"]["exists"] is True
+    assert result["artifact"]["valid"] is False
+    assert result["run"]["status"] == lifecycle_status
+
+
+@pytest.mark.parametrize(
+    "lifecycle_status",
+    ["queued", "launching", "running", "cancel_requested"],
+)
+def test_review_result_reports_active_review_run_without_validation_failure(
+    tmp_path,
+    lifecycle_status,
+):
     output_file = tmp_path / "review.json"
     store = MemoryRunStore()
     store.save_run(
         "run-review",
         {
             "run_id": "run-review",
-            "status": "running",
+            "status": lifecycle_status,
             "task_kind": "review_commit",
             "review_schema": "agy.review.v1",
             "review_output_file": str(output_file),
@@ -306,7 +431,7 @@ def test_review_result_reports_active_review_run_without_validation_failure(tmp_
 
     result = orchestrator.review_result("run-review")
 
-    assert result["status"] == "running"
+    assert result["status"] == lifecycle_status
     assert result["summary"] is None
     assert result["review"] is None
     assert result["artifact"]["path"] == str(output_file)

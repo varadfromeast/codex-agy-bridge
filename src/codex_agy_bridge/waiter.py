@@ -93,7 +93,11 @@ def wait_for_runs(
 
     while True:
         _observe_current_prompts(detectors)
-        events = _matching_events(run_dirs, condition=condition, after=after)
+        events, has_more = _matching_events(
+            run_dirs,
+            condition=condition,
+            after=after,
+        )
         runs = _compact_runs(
             run_dirs,
             state_root=state_root,
@@ -116,6 +120,8 @@ def wait_for_runs(
                     True,
                     _merge_events(events, attention_events),
                     runs,
+                    after=after,
+                    has_more=has_more,
                 )
         matched = bool(events)
         if condition == "all_terminal":
@@ -125,10 +131,24 @@ def wait_for_runs(
             if matched and not events:
                 events = _latest_terminal_events(run_dirs)
         if matched:
-            return _result(condition, True, events, runs)
+            return _result(
+                condition,
+                True,
+                events,
+                runs,
+                after=after,
+                has_more=has_more,
+            )
         now = time.monotonic()
         if now >= deadline or now >= watchdog_deadline:
-            return _result(condition, False, [], runs)
+            return _result(
+                condition,
+                False,
+                [],
+                runs,
+                after=after,
+                has_more=has_more,
+            )
         time.sleep(min(poll_interval, max(0.0, deadline - now)))
         poll_interval = _next_poll_interval(poll_interval)
 
@@ -203,34 +223,29 @@ def _matching_events(
     *,
     condition: WaitCondition,
     after: dict[str, str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, bool]]:
     events: list[dict[str, Any]] = []
+    has_more: dict[str, bool] = {}
+    kinds: set[str] | None = None
+    if condition == "any_attention":
+        kinds = ATTENTION_EVENTS
+    elif condition in {"any_terminal", "all_terminal"}:
+        kinds = TERMINAL_EVENTS
     for run_id, run_dir in run_dirs.items():
-        latest = session_events.latest_event_id(run_dir)
-        cursor = after.get(run_id)
-        if latest is None:
-            continue
-        for event in session_events.read_events(run_dir, after_event_id=cursor):
-            if _event_matches(event, condition):
-                events.append(dict(event))
+        page = session_events.read_event_page(
+            run_dir,
+            after_event_id=after.get(run_id),
+            kinds=kinds,
+        )
+        events.extend(dict(event) for event in page["events"])
+        has_more[run_id] = page["has_more"]
     events.sort(
         key=lambda event: (
             str(event.get("created_at", "")),
             str(event.get("event_id", "")),
         ),
     )
-    return events
-
-
-def _event_matches(event: Mapping[str, Any], condition: WaitCondition) -> bool:
-    kind = event.get("kind")
-    if condition == "any_event":
-        return True
-    if condition == "any_attention":
-        return kind in ATTENTION_EVENTS
-    if condition in {"any_terminal", "all_terminal"}:
-        return kind in TERMINAL_EVENTS
-    return False
+    return events, has_more
 
 
 def _compact_runs(
@@ -359,7 +374,7 @@ def _active_needs_attention_event(run_dir: Path) -> dict[str, Any] | None:
     state_event = _read_attention_state(run_dir)
     if state_event is not None:
         return state_event
-    for event in reversed(session_events.read_events(run_dir, limit=10_000)):
+    for event in reversed(session_events.read_recent_events(run_dir, limit=10_000)):
         kind = event.get("kind")
         if kind == "attention_cleared":
             _write_attention_state(run_dir, None)
@@ -473,7 +488,7 @@ def _merge_events(
 def _latest_terminal_events(run_dirs: dict[str, Path]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for run_dir in run_dirs.values():
-        for event in reversed(session_events.read_events(run_dir, limit=10_000)):
+        for event in reversed(session_events.read_recent_events(run_dir, limit=10_000)):
             if event.get("kind") in TERMINAL_EVENTS:
                 events.append(dict(event))
                 break
@@ -485,13 +500,43 @@ def _result(
     matched: bool,
     events: list[dict[str, Any]],
     runs: dict[str, dict[str, Any]],
+    *,
+    after: dict[str, str],
+    has_more: dict[str, bool],
 ) -> dict[str, Any]:
     return {
         "condition": condition,
         "matched": matched,
         "events": events,
+        "next_after": _next_after(events, after=after, run_ids=runs),
+        "has_more": has_more,
         "runs": runs,
     }
+
+
+def _next_after(
+    events: list[dict[str, Any]],
+    *,
+    after: dict[str, str],
+    run_ids: Mapping[str, object],
+) -> dict[str, str]:
+    cursors = dict(after)
+    for event in events:
+        run_id = event.get("run_id")
+        if not isinstance(run_id, str) or run_id not in run_ids:
+            continue
+        event_cursor = event.get("event_id") or event.get("run_seq")
+        if not isinstance(event_cursor, str | int):
+            continue
+        candidate = str(event_cursor)
+        candidate_seq = _cursor_to_int(candidate)
+        current_seq = _cursor_to_int(cursors.get(run_id))
+        if candidate_seq is not None and (
+            current_seq is None or candidate_seq > current_seq
+        ):
+            cursors[run_id] = candidate
+    return cursors
+
 
 def _normalize_condition(condition: str) -> WaitCondition:
     normalized = CONDITION_ALIASES.get(condition, condition)

@@ -44,7 +44,8 @@ def format_task_packet(
             "",
             "Expected output:",
             (
-                "- A full and final response to Codex with changed files, "
+                "- A full and final response to the calling harness with "
+                "changed files, "
                 "verification, and any important caveats."
             ),
         ]
@@ -57,7 +58,8 @@ def format_task_packet(
             "Completion marker:",
             (
                 "Strongly suggested: first write the full and final response "
-                "Codex should show the user, then print this marker as the "
+                "the calling harness should show the user, then print this marker as "
+                "the "
                 "last line only after all requested files and edits are complete:"
             ),
             completion_marker,

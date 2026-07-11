@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import signal
-import sys
 import time
 from contextlib import suppress
 from pathlib import Path
 
-from codex_agy_bridge import core
+from codex_agy_bridge import core, terminal
 from codex_agy_bridge.cli import AntigravityCli
 from codex_agy_bridge.execution import TmuxSession
 from codex_agy_bridge.state import RunState
@@ -19,6 +19,9 @@ clean_response = core.clean_response
 compact_step_records = core.compact_step_records
 conversation_for_prompt_after = core.conversation_for_prompt_after
 final_response = core.final_response
+acknowledge_cancel = core.acknowledge_cancel
+claim_run = core.claim_run
+mark_running = core.mark_run_running
 load_state = core.load_state
 run_dir = core.run_dir
 run_provider_health = core.run_provider_health
@@ -43,7 +46,7 @@ def launch_process(
     command: list[str],
     *,
     workspace: str,
-) -> None:
+) -> int:
     run_id = str(state["run_id"])
     run_directory = run_dir(run_id)
     tmux_session = TmuxSession(
@@ -51,9 +54,12 @@ def launch_process(
         session_name=state.get("tmux_session"),
         execution_mode=state.get("execution_mode", "print"),
         execution_surface=state.get("execution_surface", "headless"),
+        defer_child_start=True,
     )
-    tmux_session.start(run_id, command, Path(workspace))
-    return None
+    child_pid = tmux_session.start(run_id, command, Path(workspace))
+    if child_pid is None:
+        raise RuntimeError("Antigravity child PID was not recorded")
+    return child_pid
 
 
 def append_terminal_progress(
@@ -70,7 +76,7 @@ def append_terminal_progress(
     if not steps:
         return -1
 
-    with progress_log.open("a", encoding="utf-8") as handle:
+    with core.open_private_text_append(progress_log) as handle:
         for step in steps:
             index = int(step["step_index"])
             created_at = str(step.get("created_at") or "")
@@ -97,6 +103,16 @@ def append_terminal_progress(
 
 def run_active(session: str | None) -> bool:
     return bool(session and TmuxSession(Path(), session_name=session).is_alive())
+
+
+def launch_ready(session: str | None, pid: int | None) -> bool:
+    """Confirm that both the tmux execution session and agy child are live."""
+    return bool(session and pid and run_active(session) and terminal.process_alive(pid))
+
+
+def release_launch(state: RunState) -> None:
+    """Allow the PID-published child wrapper to exec Antigravity."""
+    terminal.release_child(run_dir(str(state["run_id"])) / "agy.start")
 
 
 def stop_run(session: str | None) -> None:
@@ -135,10 +151,18 @@ def run(run_id: str) -> int:
     return RunSupervisor(run_id).execute()
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: python -m codex_agy_bridge.runner <run-id>")
-    raise SystemExit(run(sys.argv[1]))
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="python -m codex_agy_bridge.runner",
+    )
+    parser.add_argument("--state-root", type=Path)
+    parser.add_argument("run_id")
+    arguments = parser.parse_args(argv)
+    if arguments.state_root is not None:
+        state_root = arguments.state_root.expanduser().resolve()
+        core.STATE_ROOT = state_root
+        os.environ["AGY_BRIDGE_STATE_DIR"] = str(state_root)
+    raise SystemExit(run(arguments.run_id))
 
 
 if __name__ == "__main__":

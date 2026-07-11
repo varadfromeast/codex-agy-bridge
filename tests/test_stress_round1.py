@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from codex_agy_bridge import core
+from codex_agy_bridge import core, session_events
 from codex_agy_bridge._orchestrator import RunnerOrchestrator
 from codex_agy_bridge.exceptions import ConcurrencyLimitExceeded
 from codex_agy_bridge.execution import MockSession
@@ -307,6 +307,7 @@ def test_stress_10_cancel_does_not_overwrite_completed(tmp_path):
     thread.join(timeout=5)
 
     assert orchestrator.load_state("run")["status"] == "completed"
+    assert session_events.read_events(core.run_dir("run", state_root=tmp_path)) == []
 
 
 def test_stress_11_status_does_not_overwrite_completed(tmp_path):
@@ -457,7 +458,7 @@ def test_stress_17_active_registry_survives_transition_churn(tmp_path):
 
     def churn(index):
         run_id = f"run-{index}"
-        for status in ("running", "cancel_requested", "running", "completed"):
+        for status in ("launching", "running", "completed"):
             orchestrator.update_state(run_id, status=status)
 
     with ThreadPoolExecutor(max_workers=20) as pool:

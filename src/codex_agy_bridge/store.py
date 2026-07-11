@@ -11,8 +11,10 @@ from filelock import FileLock
 
 from codex_agy_bridge import core
 from codex_agy_bridge.exceptions import RunNotFoundError
+from codex_agy_bridge.run_lifecycle import RUN_STATUSES, transition_allowed
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
     GoalState,
     RunState,
     validate_goal_state,
@@ -149,7 +151,7 @@ class DiskRunStore:
         # so the registry is consistent with the persisted state.
         if state.get("status") in ACTIVE_STATUSES:
             active_dir = self.state_root / "active"
-            active_dir.mkdir(parents=True, exist_ok=True)
+            core.ensure_private_directory(active_dir)
             core.atomic_write_json(active_dir / run_id, {"run_id": run_id})
         elif state.get("status") in TERMINAL_STATUSES:
             active_file = self.state_root / "active" / run_id
@@ -166,6 +168,18 @@ class DiskRunStore:
         """Atomically apply changes without overwriting a terminal transition."""
         with self.lock_run(run_id):
             state = self.get_run(run_id)
+            if state.get("status") in TERMINAL_STATUSES and "status" in changes:
+                return state
+            requested_status = changes.get("status")
+            if (
+                isinstance(requested_status, str)
+                and requested_status in RUN_STATUSES
+                and not transition_allowed(
+                    state["status"],
+                    cast(Any, requested_status),
+                )
+            ):
+                return state
             if require_active and state.get("status") not in ACTIVE_STATUSES:
                 return state
             cast(dict[str, Any], state).update(changes)
@@ -196,13 +210,13 @@ class DiskRunStore:
     def lock_run(self, run_id: str) -> AbstractContextManager[Any]:
         """Acquire a FileLock for the run state."""
         lock_path = core.run_dir(run_id, state_root=self.state_root) / "state.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        core.ensure_private_directory(lock_path.parent)
         return FileLock(str(lock_path), timeout=10)
 
     def lock_goal(self, goal_id: str) -> AbstractContextManager[Any]:
         """Acquire a FileLock for the goal state."""
         lock_path = core.goal_dir(goal_id, state_root=self.state_root) / "state.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        core.ensure_private_directory(lock_path.parent)
         return FileLock(str(lock_path), timeout=10)
 
     def list_active_runs(self) -> list[RunState]:
@@ -241,6 +255,18 @@ class MemoryRunStore:
         """Atomically apply changes using the same semantics as disk storage."""
         with self.lock_run(run_id):
             state = self.get_run(run_id)
+            if state.get("status") in TERMINAL_STATUSES and "status" in changes:
+                return state
+            requested_status = changes.get("status")
+            if (
+                isinstance(requested_status, str)
+                and requested_status in RUN_STATUSES
+                and not transition_allowed(
+                    state["status"],
+                    cast(Any, requested_status),
+                )
+            ):
+                return state
             if require_active and state.get("status") not in ACTIVE_STATUSES:
                 return state
             cast(dict[str, Any], state).update(changes)

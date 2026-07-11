@@ -21,11 +21,13 @@ from filelock import FileLock
 from codex_agy_bridge import (
     auth_flow,
     core,
+    harness_contract,
     interactive_input,
     labels,
     review,
     run_control_snapshot,
     run_input_delivery,
+    run_lifecycle,
     run_results,
     session_events,
     terminal,
@@ -37,6 +39,7 @@ from codex_agy_bridge.exceptions import (
     AuthenticationRequiredError,
     ConcurrencyLimitExceeded,
     RunNotFoundError,
+    WorkspaceAccessError,
 )
 from codex_agy_bridge.execution import ExecutionSession, TmuxSession
 from codex_agy_bridge.process import LocalProcessManager, ProcessManager
@@ -57,6 +60,8 @@ JANITOR_INTERVAL_SECONDS = 60
 DEFAULT_WAIT_TIMEOUT_SECONDS = 86_400
 DEFAULT_MCP_WAIT_SLICE_SECONDS = 120
 CANCEL_TERM_GRACE_SECONDS = 0.25
+DEFAULT_STARTUP_WAIT_SECONDS = 2.0
+STARTUP_POLL_SECONDS = 0.02
 CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
 )
@@ -179,6 +184,7 @@ class RunnerOrchestrator:
         store: RunStore | None = None,
         session_factory: Callable[[RunState, Path], ExecutionSession] | None = None,
         cli: AntigravityCli | None = None,
+        startup_wait_seconds: float | None = None,
     ):
         """Initialize the orchestrator.
 
@@ -193,6 +199,14 @@ class RunnerOrchestrator:
         self._store = store
         self.session_factory = session_factory or default_session_factory
         self.cli = cli or AntigravityCli()
+        if startup_wait_seconds is None:
+            startup_wait_seconds = (
+                DEFAULT_STARTUP_WAIT_SECONDS
+                if isinstance(self.process_manager, LocalProcessManager)
+                and (store is None or isinstance(store, DiskRunStore))
+                else 0.0
+            )
+        self.startup_wait_seconds = max(0.0, startup_wait_seconds)
         self._authentication_status: dict[str, Any] | None = None
         self._authentication_lock = threading.Lock()
 
@@ -356,7 +370,7 @@ class RunnerOrchestrator:
 
     def maybe_run_janitor(self, max_log_age_days: int = 7) -> None:
         """Run cleanup at most once per interval across bridge processes."""
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        core.ensure_private_directory(self.state_root)
         timestamp_path = self.state_root / "janitor.json"
         with FileLock(str(self.state_root / "janitor.lock"), timeout=10):
             try:
@@ -414,9 +428,39 @@ class RunnerOrchestrator:
             ValueError: For invalid parameter values.
             ConcurrencyLimitExceeded: If parallel run limits are breached.
         """
+        # Production runs are always visible interactive tmux sessions. Keep
+        # the legacy execution_mode value for task-packet semantics, but do
+        # not allow callers to route a Run through the old headless surface.
+        execution_surface = "foreground"
+        human_attachable = True
+        workspace_root = Path(workspace).expanduser().resolve()
+        if not workspace_root.is_dir():
+            raise WorkspaceAccessError(
+                f"workspace is not a directory: {workspace_root}"
+            )
+        auth_status = self.authentication_status(refresh_if_required=True)
+        if auth_status["status"] == "auth_required":
+            auth_session = auth_flow.start_visible_auth_session(
+                cli=self.cli,
+                state_root=self.state_root,
+                workspace=workspace_root,
+            )
+            raise AuthenticationRequiredError(
+                {
+                    "status": "auth_required",
+                    "warning": (
+                        "Antigravity CLI is not authenticated. Authenticate in "
+                        "the visible agy CLI session, then retry this run."
+                    ),
+                    "provider_health": auth_status,
+                    "auth_session": auth_session,
+                    "login_tool": "agy_login",
+                    "retry": "After sign-in completes, call agy_run_start again.",
+                }
+            )
         request = RunRequest.prepare(
             prompt=prompt,
-            workspace=workspace,
+            workspace=str(workspace_root),
             timeout_seconds=timeout_seconds,
             conversation_id=conversation_id,
             dangerously_skip_permissions=dangerously_skip_permissions,
@@ -433,30 +477,10 @@ class RunnerOrchestrator:
             cli=self.cli,
             expected_file=expected_file,
         )
-        auth_status = self.authentication_status()
-        if auth_status["status"] == "auth_required":
-            auth_session = auth_flow.start_visible_auth_session(
-                cli=self.cli,
-                state_root=self.state_root,
-                workspace=request.workspace,
-            )
-            raise AuthenticationRequiredError(
-                {
-                    "status": "auth_required",
-                    "warning": (
-                        "Antigravity CLI is not authenticated. Authenticate in "
-                        "the visible agy CLI session, then retry this run."
-                    ),
-                    "provider_health": auth_status,
-                    "auth_session": auth_session,
-                    "login_tool": "agy_login",
-                    "retry": "After sign-in completes, call agy_run_start again.",
-                }
-            )
         self.maybe_run_janitor()
         from codex_agy_bridge import orchestration
 
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        core.ensure_private_directory(self.state_root)
         # Hold start.lock only for dedup check + state write, NOT subprocess spawn.
         with FileLock(str(self.state_root / "start.lock"), timeout=10):
             running = self.active_runs()
@@ -490,9 +514,9 @@ class RunnerOrchestrator:
             timestamp = core.utc_now().replace("+00:00", "Z").replace(":", "")
             run_id = f"{timestamp}-{uuid.uuid4().hex[:8]}"
             directory = self.run_dir(run_id)
-            directory.mkdir(parents=True, exist_ok=False)
+            directory.mkdir(mode=0o700, parents=True, exist_ok=False)
             artifact_dir = directory / "artifacts"
-            artifact_dir.mkdir()
+            artifact_dir.mkdir(mode=0o700)
             now = core.utc_now()
             session_label = labels.session_label(
                 seed=request.target_name or request.prompt,
@@ -516,9 +540,18 @@ class RunnerOrchestrator:
             self.store.save_run(run_id, state)
         # Lock released — spawn subprocess without blocking other create_run callers.
         try:
-            with (directory / "bridge.log").open("ab") as bridge_log:
+            with core.open_private_binary_append(
+                directory / "bridge.log"
+            ) as bridge_log:
                 process = self.process_manager.spawn(
-                    [sys.executable, "-m", "codex_agy_bridge.runner", run_id],
+                    [
+                        sys.executable,
+                        "-m",
+                        "codex_agy_bridge.runner",
+                        "--state-root",
+                        str(self.state_root.expanduser().resolve()),
+                        run_id,
+                    ],
                     cwd=str(request.workspace),
                     stdout=bridge_log,
                     stderr=bridge_log,
@@ -531,7 +564,24 @@ class RunnerOrchestrator:
                 finished_at=core.utc_now(),
             )
             raise
-        return self.update_state(run_id, runner_pid=process.pid)
+        state = self.update_state(run_id, runner_pid=process.pid)
+        return self._wait_for_startup(run_id, state)
+
+    def _wait_for_startup(self, run_id: str, state: RunState) -> RunState:
+        """Briefly await a durable running or terminal startup outcome."""
+        if self.startup_wait_seconds <= 0:
+            return state
+        deadline = time.monotonic() + self.startup_wait_seconds
+        while True:
+            state = self.load_state(run_id)
+            if state["status"] not in {"queued", "launching"}:
+                return state
+            runner_pid = state.get("runner_pid")
+            if runner_pid and not self.process_manager.is_alive(runner_pid):
+                return cast(RunState, self.status(run_id, compact=False))
+            if time.monotonic() >= deadline:
+                return state
+            time.sleep(STARTUP_POLL_SECONDS)
 
     def status(self, run_id: str, *, compact: bool = True) -> dict[str, Any]:
         """Fetch the current status of a run.
@@ -633,6 +683,10 @@ class RunnerOrchestrator:
                         else "idle"
                     ),
                 }
+            wait_call = harness_contract.wait_call(
+                [run_id],
+                condition="any_attention",
+            )
             return {
                 "run_id": run_id,
                 "status": state["status"],
@@ -657,19 +711,13 @@ class RunnerOrchestrator:
                 "latest_transcript_step": snapshot["latest_transcript_step"],
                 "terminal_tail_available": snapshot["terminal_tail_available"],
                 "artifact_dir": state.get("artifact_dir"),
-                "notification_resource_uri": state.get("notification_resource_uri"),
-                "wait_tool": state.get("wait_tool", "codex_agy_bridge_agy_run_wait"),
-                "local_wait_tool": state.get("local_wait_tool", "agy_run_wait"),
-                "wait_call": state.get(
-                    "wait_call",
-                    {
-                        "tool": "codex_agy_bridge_agy_run_wait",
-                        "arguments": {
-                            "run_ids": [run_id],
-                            "condition": "any_attention",
-                        },
-                    },
+                "notification_resource_uri": state.get(
+                    "notification_resource_uri",
+                    f"agy-run://{run_id}/notifications",
                 ),
+                "local_wait_tool": state.get("local_wait_tool", "agy_run_wait"),
+                "wait_tool": wait_call["tool"],
+                "wait_call": wait_call,
                 "latest_step": latest,
                 "provider_health": core.run_provider_health(self.run_dir(run_id)),
                 "interactive_queue": interactive_queue,
@@ -677,6 +725,19 @@ class RunnerOrchestrator:
                 "tmux_session": state.get("tmux_session"),
             }
         result: dict[str, Any] = dict(state)
+        # Keep legacy fields in the full response for existing MCP clients;
+        # wait_call is the canonical replacement and can be adopted gradually.
+        result.setdefault(
+            "notification_resource_uri",
+            f"agy-run://{run_id}/notifications",
+        )
+        result.setdefault("local_wait_tool", "agy_run_wait")
+        wait_call = harness_contract.wait_call(
+            [run_id],
+            condition="any_attention",
+        )
+        result["wait_tool"] = wait_call["tool"]
+        result["wait_call"] = wait_call
         result["paths"] = {
             "run_directory": str(self.run_dir(run_id)),
             "bridge_log": str(self.run_dir(run_id) / "bridge.log"),
@@ -753,21 +814,37 @@ class RunnerOrchestrator:
                 state_root=self.state_root,
                 load_state=self.load_state,
             )
-            events = session_events.read_events(
+            event_page = session_events.read_event_page(
                 run_dir,
                 after_event_id=cursor["event_id"],
-                limit=100,
+            )
+            events = event_page["events"]
+            delivered_event = events[-1] if events else None
+            delivered_event_id = (
+                delivered_event.get("run_seq")
+                if delivered_event is not None
+                else cursor["event_id"]
+            )
+            delivered_event_key = (
+                delivered_event.get("event_id")
+                if delivered_event is not None
+                else cursor["event_id"]
             )
             conversation_id = state.get("conversation_id")
-            steps = (
-                core.compact_steps(
+            transcript_page = (
+                core.compact_step_page(
                     conversation_id,
                     after_step=cursor["transcript_step"],
                     limit=50,
                 )
                 if conversation_id
-                else []
+                else {
+                    "steps": [],
+                    "next_after": cursor["transcript_step"],
+                    "has_more": False,
+                }
             )
+            steps = transcript_page["steps"]
             runs[run_id] = {
                 "run_id": run_id,
                 "state": core.public_state(dict(state)),
@@ -776,14 +853,20 @@ class RunnerOrchestrator:
                 "attention": snapshot["attention"],
                 "can_send_text": snapshot["can_send_text"],
                 "events": events,
+                "has_more_events": event_page["has_more"],
                 "transcript": {
                     "conversation_id": conversation_id,
                     "steps": steps,
+                    "has_more": transcript_page["has_more"],
                 },
                 "cursor": {
-                    "event_id": snapshot["latest_event_id"],
+                    "event_id": delivered_event_id,
+                    "event_key": delivered_event_key,
+                    "transcript_step": transcript_page["next_after"],
+                },
+                "event_head": {
+                    "event_id": event_page["head"],
                     "event_key": snapshot["latest_event_key"],
-                    "transcript_step": snapshot["latest_transcript_step"],
                 },
                 "terminal": terminal_evidence.observe_terminal(
                     run_dir,
@@ -993,7 +1076,7 @@ class RunnerOrchestrator:
                 "effective_timeout_seconds": effective_timeout_seconds,
                 "capped_by": "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
                 "next": (
-                    "Call agy_run_wait again with the returned latest_event_id "
+                    "Call agy_run_wait again with the returned next_after "
                     "cursors, or call agy_run_observe/agy_review_result for a "
                     "non-blocking snapshot."
                 ),
@@ -1015,21 +1098,19 @@ class RunnerOrchestrator:
         state = self.load_state(run_id)
         if state["status"] not in ACTIVE_STATUSES:
             return core.public_state(cast(dict[str, Any], state))
+        cancel_transition = run_lifecycle.request_cancel(self.store, run_id)
+        state = cancel_transition["state"]
+        if not cancel_transition["applied"] and state["status"] != "cancel_requested":
+            return core.public_state(cast(dict[str, Any], state))
         cancel_file = self.run_dir(run_id) / "cancel"
         cancel_file.parent.mkdir(parents=True, exist_ok=True)
         cancel_file.touch()
-        session_events.append_event(
-            self.run_dir(run_id),
-            "cancel_requested",
-            {"status": "cancel_requested"},
-        )
-        state = self.update_state(
-            run_id,
-            status="cancel_requested",
-            only_if_active=True,
-        )
-        if state["status"] not in ACTIVE_STATUSES:
-            return core.public_state(cast(dict[str, Any], state))
+        if cancel_transition["applied"]:
+            session_events.append_event(
+                self.run_dir(run_id),
+                "cancel_requested",
+                {"status": "cancel_requested"},
+            )
         grace_state = self._wait_for_cancel_ack(run_id)
         if grace_state is not None and grace_state["status"] not in ACTIVE_STATUSES:
             if grace_state["status"] == "canceled":
@@ -1038,15 +1119,17 @@ class RunnerOrchestrator:
         session = self.get_session(state)
         self._terminate_for_cancel(state, session)
         self._discard_result_artifact(run_id)
-        state = self.update_state(
+        cancel_ack = run_lifecycle.acknowledge_cancel(
+            self.store,
             run_id,
-            status="canceled",
-            result=None,
-            error=None,
-            finished_at=core.utc_now(),
-            only_if_active=True,
+            {
+                "result": None,
+                "error": None,
+                "finished_at": core.utc_now(),
+            },
         )
-        if state["status"] == "canceled":
+        state = cancel_ack["state"]
+        if cancel_ack["applied"]:
             session_events.append_event(
                 self.run_dir(run_id),
                 "run_canceled",
@@ -1172,7 +1255,7 @@ class RunnerOrchestrator:
             "created_at": now,
             "updated_at": now,
         }
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        core.ensure_private_directory(self.state_root)
         self.store.save_goal(goal_id, state)
         return state
 
@@ -1234,9 +1317,21 @@ class RunnerOrchestrator:
             self.store.save_goal(goal_id, goal)
             return state
 
-    def authentication_status(self, *, refresh: bool = False) -> dict[str, Any]:
+    def authentication_status(
+        self,
+        *,
+        refresh: bool = False,
+        refresh_if_required: bool = False,
+    ) -> dict[str, Any]:
         with self._authentication_lock:
-            if refresh or self._authentication_status is None:
+            if (
+                refresh
+                or self._authentication_status is None
+                or (
+                    refresh_if_required
+                    and self._authentication_status.get("status") == "auth_required"
+                )
+            ):
                 self._authentication_status = _authentication_status(self.cli)
             if self._authentication_status.get("status") == "authenticated":
                 closed = auth_flow.close_visible_auth_sessions(self.state_root)

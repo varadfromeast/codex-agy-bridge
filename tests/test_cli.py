@@ -45,17 +45,43 @@ def test_cli_discovers_version_models_plugins_and_capabilities(monkeypatch):
     assert cli.capabilities().interactive
 
 
-def test_cli_authentication_status_reports_authenticated(monkeypatch):
-    monkeypatch.setattr(
-        "codex_agy_bridge.cli.subprocess.run",
-        lambda _command, **_kwargs: completed("Model A\n"),
-    )
+def test_cli_authentication_status_reports_authenticated_from_runtime_log(
+    monkeypatch,
+):
+    def run(command, **_kwargs):
+        log_path = command[command.index("--log-file") + 1]
+        with open(log_path, "w", encoding="utf-8") as handle:
+            handle.write("OAuth: authenticated successfully as user@example.com\n")
+        return completed("Model A\n")
+
+    monkeypatch.setattr("codex_agy_bridge.cli.subprocess.run", run)
     cli = AntigravityCli(executable="agy")
 
     assert cli.authentication_status() == {
         "status": "authenticated",
-        "evidence": "agy models returned available models",
+        "evidence": "Antigravity runtime authenticated successfully",
     }
+
+
+def test_cli_authentication_status_rejects_cached_models_without_runtime_token(
+    monkeypatch,
+):
+    def run(command, **_kwargs):
+        log_path = command[command.index("--log-file") + 1]
+        with open(log_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "error getting token source: "
+                "You are not logged into Antigravity.\n"
+            )
+        return completed("Model A\n")
+
+    monkeypatch.setattr("codex_agy_bridge.cli.subprocess.run", run)
+    cli = AntigravityCli(executable="agy")
+
+    result = cli.authentication_status()
+
+    assert result["status"] == "auth_required"
+    assert "not logged into Antigravity" in result["evidence"]
 
 
 def test_cli_authentication_status_reports_sign_in_required(monkeypatch):
