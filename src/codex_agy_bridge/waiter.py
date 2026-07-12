@@ -63,14 +63,17 @@ def wait_for_runs(
     state_root: Path | None = None,
     load_state: Callable[[str], RunState] | None = None,
     condition: WaitCondition = "any_attention",
-    after: dict[str, str] | None = None,
+    after: dict[str, Any] | None = None,
     timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Block until selected runs produce events matching ``condition``."""
     if not run_dirs:
         raise ValueError("run_ids must not be empty")
     condition = _normalize_condition(condition)
-    after = dict(after or {})
+    after = {
+        run_id: _cursor_event_id(cursor)
+        for run_id, cursor in dict(after or {}).items()
+    }
     timeout_seconds = max(0.0, timeout_seconds)
     started_at = time.monotonic()
     deadline = started_at + timeout_seconds
@@ -440,6 +443,15 @@ def _read_attention_state(run_dir: Path) -> dict[str, Any] | None:
 def _write_attention_state(run_dir: Path, event: Mapping[str, Any] | None) -> None:
     payload = {"active": event is not None, "event": dict(event) if event else None}
     core.atomic_write_json(run_dir / ATTENTION_STATE_FILE, payload)
+
+
+def _cursor_event_id(cursor: object) -> str | None:
+    if isinstance(cursor, Mapping):
+        value = cursor.get("event_key") or cursor.get("event_id")
+        return str(value) if value is not None else None
+    if cursor is None:
+        return None
+    return str(cursor)
 
 
 def _event_after_cursor(event: Mapping[str, Any], cursor: str | None) -> bool:

@@ -39,7 +39,10 @@ mcp = StrictFastMCP(
         "condition is one of any_attention, any_terminal, all_terminal, or "
         "any_event (plus documented aliases); do not treat MCP wait disconnects "
         "as Run failures. agy_run_observe reads status, transcript, merged "
-        "state, or raw terminal evidence. agy_run_input sends text only when "
+        "state, or raw terminal evidence. When a run is possibly_stalled, "
+        "inspect the live pane and terminal tail for agent error markers, "
+        "feedback prompts, and completion markers; a live tmux session alone "
+        "does not prove the Agy agent is alive. agy_run_input sends text only when "
         "optional event or transcript preconditions still match; stale writes "
         "are rejected with fresh context. agy_run_result reads final result "
         "metadata or bounded chunks. agy_start_with_expected_file starts a task "
@@ -178,7 +181,7 @@ def agy_start_with_expected_file(
 def agy_run_wait(
     run_ids: list[str],
     condition: waiter.WaitCondition = "any_attention",
-    after: dict[str, str] | None = None,
+    after: dict[str, Any] | None = None,
     timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Wait for sparse Run events instead of repeatedly polling status.

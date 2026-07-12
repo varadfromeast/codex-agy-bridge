@@ -447,7 +447,7 @@ def test_supervisor_emits_progress_stalled_after_transcript_idle(
         "agy_run_observe"
     )
     assert stalled_events[0]["observed"]["suggested_next_arguments"] == {
-        "run_id": "run-1",
+        "run_ids": ["run-1"],
         "view": "terminal",
     }
 

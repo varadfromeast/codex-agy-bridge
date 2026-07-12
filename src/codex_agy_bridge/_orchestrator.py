@@ -1049,7 +1049,7 @@ class RunnerOrchestrator:
         run_ids: list[str],
         *,
         condition: waiter.WaitCondition = "any_attention",
-        after: dict[str, str] | None = None,
+        after: dict[str, Any] | None = None,
         timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         """Block until selected runs have durable events worth reporting."""
@@ -1155,10 +1155,16 @@ class RunnerOrchestrator:
         state: RunState,
         session: ExecutionSession,
     ) -> None:
+        candidates = [
+            ("runner", state.get("runner_pid")),
+            ("agy", state.get("agy_pid")),
+        ]
         pids = [
             pid
-            for pid in (state.get("runner_pid"), state.get("agy_pid"))
-            if isinstance(pid, int) and pid > 0
+            for role, pid in candidates
+            if isinstance(pid, int)
+            and pid > 0
+            and self._process_belongs_to_run(pid, role, state)
         ]
         for pid in pids:
             with suppress(OSError, ValueError, TypeError):
@@ -1168,8 +1174,9 @@ class RunnerOrchestrator:
             if all(not self._process_alive(pid) for pid in pids):
                 break
             time.sleep(0.02)
-        with suppress(Exception):
-            session.kill()
+        if pids or self._session_belongs_to_run(state):
+            with suppress(Exception):
+                session.kill()
         for pid in pids:
             with suppress(OSError, ValueError, TypeError):
                 self.process_manager.killpg(pid, signal.SIGKILL)
@@ -1180,6 +1187,34 @@ class RunnerOrchestrator:
         except (OSError, ValueError, TypeError):
             LOGGER.debug("Suppressed process liveness failure", exc_info=True)
         return False
+
+    def _process_belongs_to_run(self, pid: int, role: str, state: RunState) -> bool:
+        command = self.process_manager.command_line(pid)
+        if not self.process_manager.supports_identity:
+            return True
+        if not command:
+            return False
+        if role == "runner":
+            return "codex_agy_bridge" in command
+        configured = state.get("command")
+        executable = (
+            configured[0]
+            if isinstance(configured, list) and configured
+            else "agy"
+        )
+        return str(executable) in command or Path(str(executable)).name in command
+
+    def _session_belongs_to_run(self, state: RunState) -> bool:
+        session = state.get("tmux_session")
+        run_id = state.get("run_id")
+        return (
+            isinstance(session, str)
+            and isinstance(run_id, str)
+            and (
+                session.endswith(run_id[-8:])
+                or not state.get("runner_pid") and not state.get("agy_pid")
+            )
+        )
 
     def _reaper_can_kill_session(self, state: RunState) -> bool:
         timeout = state.get("timeout_seconds")

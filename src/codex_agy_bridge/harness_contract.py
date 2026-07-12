@@ -38,5 +38,5 @@ def terminal_observe_call(run_id: str) -> ToolCall:
     """Describe one canonical raw-terminal observation operation."""
     return {
         "tool": "agy_run_observe",
-        "arguments": {"run_id": run_id, "view": "terminal"},
+        "arguments": {"run_ids": [run_id], "view": "terminal"},
     }

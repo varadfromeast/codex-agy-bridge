@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import traceback
 from contextlib import suppress
@@ -34,6 +35,8 @@ INCOMPLETE_RESPONSE_PHRASES = (
     "when it finishes",
 )
 TERMINAL_COMPLETION_MIN_RESPONSE_CHARS = 8
+AGENT_FAILURE_MARKER = "agent execution terminated due to error"
+AGENT_ERROR_ID_PATTERN = re.compile(r"error id:\s*([^\s]+)", re.IGNORECASE)
 
 
 def _looks_like_incomplete_response(response: str) -> bool:
@@ -207,7 +210,11 @@ class RunSupervisor:
                 self._finish(status="canceled")
                 return 0
             self._observe_conversation()
-            self._observe_progress_stall()
+            stall_error = self._observe_progress_stall()
+            if stall_error is not None:
+                self._stop()
+                self._finish(status="failed", error=stall_error)
+                return 1
             self._deliver_interactive_input()
             response = self._response()
             terminal_response = (
@@ -292,21 +299,21 @@ class RunSupervisor:
                 )
             self._observe_prompt(records)
 
-    def _observe_progress_stall(self) -> None:
+    def _observe_progress_stall(self) -> str | None:
         if (
             self.latest_transcript_step_index < 0
             or self.progress_stall_seconds <= 0
         ):
-            return
+            return None
         now = time.monotonic()
         idle_seconds = int(now - self.transcript_advanced_at)
         if idle_seconds < self.progress_stall_seconds:
-            return
+            return None
         if (
             self.next_progress_stall_event_at is not None
             and now < self.next_progress_stall_event_at
         ):
-            return
+            return None
         self.next_progress_stall_event_at = now + self.progress_stall_seconds
         next_call = harness_contract.terminal_observe_call(self.run_id)
         session_events.append_event(
@@ -330,6 +337,22 @@ class RunSupervisor:
                 },
             },
         )
+        return self._terminal_failure_after_stall()
+
+    def _terminal_failure_after_stall(self) -> str | None:
+        """Turn an Agy error left in a live tmux shell into a terminal failure."""
+        if not self.session:
+            return None
+        with suppress(terminal.TmuxCommandError):
+            pane = terminal.capture_pane(self.session, timeout_seconds=0.2)
+        if not pane:
+            return None
+        tail = terminal.clean_text(pane)[-8_000:]
+        if AGENT_FAILURE_MARKER not in tail.casefold():
+            return None
+        match = AGENT_ERROR_ID_PATTERN.search(tail)
+        error_id = f" ({match.group(1)})" if match else ""
+        return f"Antigravity agent terminated with an error{error_id}"
 
     def _observe_prompt(self, records: list[dict[str, object]]) -> None:
         event = self.prompt_detector.inspect(transcript_records=records)
