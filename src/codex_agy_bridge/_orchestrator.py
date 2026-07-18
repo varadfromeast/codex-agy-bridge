@@ -925,6 +925,46 @@ class RunnerOrchestrator:
         )
         return review.launch_response(state)
 
+    def review_files(
+        self,
+        *,
+        paths: list[str],
+        issue: str,
+        workspace: str,
+        output_file: str | None = None,
+        timeout_seconds: int = 900,
+        conversation_id: str | None = None,
+        dangerously_skip_permissions: bool = True,
+        model: str | None = DEFAULT_MODEL,
+        sandbox: bool = False,
+        additional_directories: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Start a typed review Run for explicitly requested local files."""
+        normalized_output = review.normalize_output_file(workspace, output_file)
+        prompt = review.files_prompt(
+            paths=paths,
+            issue=issue,
+            output_file=normalized_output,
+        )
+        state = self.create_run(
+            prompt=prompt,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+            expected_file=normalized_output,
+        )
+        state = self.update_state(
+            state["run_id"],
+            task_kind="review_files",
+            review_schema=review.REVIEW_SCHEMA,
+            review_output_file=normalized_output,
+        )
+        return review.launch_response(state)
+
     def review_result(self, run_id: str) -> dict[str, Any]:
         """Read, validate, and summarize a typed review artifact."""
         state = self.load_state(run_id)

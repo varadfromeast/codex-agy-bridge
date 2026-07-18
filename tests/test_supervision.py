@@ -644,6 +644,32 @@ def test_supervisor_treats_explicit_completion_marker_as_stable(
     assert supervisor._completion_is_stable("final response DONE_MARKER")
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        "I am waiting\nDONE_MARKER",
+        "(Waiting for task-16 to complete...)\nDONE_MARKER",
+    ],
+)
+def test_supervisor_rejects_incomplete_marker_response(
+    monkeypatch,
+    tmp_path,
+    response,
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+    }
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert not supervisor._completion_is_stable(response)
+
+
 def test_supervisor_completes_when_marker_only_appears_in_terminal(
     monkeypatch, tmp_path
 ):
@@ -993,6 +1019,38 @@ def test_supervisor_uses_later_terminal_marker_after_echoed_task_prompt(
     assert supervisor._terminal_completion_response() == (
         "\nCurrently signed in as user@example.com\n"
         "Final answer from the visible pane.\nDONE_MARKER"
+    )
+
+
+def test_supervisor_uses_later_terminal_marker_after_incomplete_response(
+    monkeypatch,
+    tmp_path,
+):
+    state = {
+        "run_id": "run-1",
+        "workspace": str(tmp_path),
+        "timeout_seconds": 10,
+        "completion_marker": "DONE_MARKER",
+        "prompt": "do work",
+        "tmux_session": "agy-run-1",
+    }
+    (tmp_path / "terminal.log").write_text(
+        "\n".join(
+            [
+                "(Waiting for task-16 to complete...)",
+                "DONE_MARKER",
+                "Final answer from the visible pane.",
+                "DONE_MARKER",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "load_state", lambda _run_id: state)
+    monkeypatch.setattr(runner, "run_dir", lambda _run_id: tmp_path)
+    supervisor = RunSupervisor("run-1")
+
+    assert supervisor._terminal_completion_response() == (
+        "\nFinal answer from the visible pane.\nDONE_MARKER"
     )
 
 

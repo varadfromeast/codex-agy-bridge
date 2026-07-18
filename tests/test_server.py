@@ -56,6 +56,7 @@ def test_run_result_uses_optional_byte_offsets():
 def test_review_tools_expose_expected_contracts():
     commit = inspect.signature(server.agy_review_commit).parameters
     branch = inspect.signature(server.agy_review_branch).parameters
+    files = inspect.signature(server.agy_review_files).parameters
     result = inspect.signature(server.agy_review_result).parameters
 
     assert list(commit) == [
@@ -87,6 +88,19 @@ def test_review_tools_expose_expected_contracts():
         "additional_directories",
     ]
     assert branch["include_untracked"].default is True
+    assert list(files) == [
+        "paths",
+        "issue",
+        "workspace",
+        "output_file",
+        "timeout_seconds",
+        "conversation_id",
+        "dangerously_skip_permissions",
+        "model",
+        "sandbox",
+        "additional_directories",
+    ]
+    assert files["output_file"].default is None
     assert list(result) == ["run_id"]
 
 

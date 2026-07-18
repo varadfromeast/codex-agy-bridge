@@ -12,7 +12,7 @@ from codex_agy_bridge import expected_artifact, harness_contract, waiter
 from codex_agy_bridge.state import ACTIVE_STATUSES, RunState
 
 REVIEW_SCHEMA = "agy.review.v1"
-REVIEW_TASK_KINDS = {"review_commit", "review_branch"}
+REVIEW_TASK_KINDS = {"review_commit", "review_branch", "review_files"}
 REVIEW_ARTIFACT = {
     "kind": "review_json",
     "schema": REVIEW_SCHEMA,
@@ -121,6 +121,32 @@ def branch_prompt(
         change_contract=(
             f"Review committed branch changes plus {source} working tree changes. "
             f"{base_line} Record the reviewed change sources in the artifact."
+        ),
+    )
+
+
+def files_prompt(
+    *,
+    paths: list[str],
+    issue: str,
+    output_file: str,
+) -> str:
+    if not paths:
+        raise ValueError("paths must not be empty")
+    normalized_paths: list[str] = []
+    for path in paths:
+        text = _required_text(path, "paths")
+        if "\n" in text:
+            raise ValueError("paths entries must be single-line paths")
+        normalized_paths.append(text)
+    return _review_prompt(
+        title="Review requested files",
+        issue=issue,
+        scope_paths=normalized_paths,
+        output_file=output_file,
+        change_contract=(
+            "Review only the requested local files at their current contents. "
+            "Do not infer a commit or working-tree diff."
         ),
     )
 

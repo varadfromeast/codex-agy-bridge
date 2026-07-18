@@ -136,6 +136,47 @@ def test_review_branch_prompt_includes_dirty_tree_contract(tmp_path):
     assert "staged, unstaged, and untracked" in state["prompt"]
 
 
+def test_review_files_starts_tagged_expected_file_run(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        process_manager=FakeProcessManager(),
+        cli=FakeCli(),
+    )
+
+    result = orchestrator.review_files(
+        paths=["src/alpha.py", "src/beta.py"],
+        issue="Review these two files",
+        workspace=str(workspace),
+    )
+
+    state = orchestrator.load_state(result["run_id"])
+    assert state["task_kind"] == "review_files"
+    assert state["expected_file"] == state["review_output_file"]
+    assert "Review requested files" in state["prompt"]
+    assert "src/alpha.py" in state["prompt"]
+    assert "src/beta.py" in state["prompt"]
+    assert "Review only the requested local files" in state["prompt"]
+
+
+def test_review_files_rejects_multiline_path_with_public_argument_name(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orchestrator = RunnerOrchestrator(
+        state_root=tmp_path / "state",
+        process_manager=FakeProcessManager(),
+        cli=FakeCli(),
+    )
+
+    with pytest.raises(ValueError, match="paths entries"):
+        orchestrator.review_files(
+            paths=["src/alpha.py\nsrc/beta.py"],
+            issue="Review these files",
+            workspace=str(workspace),
+        )
+
+
 def test_review_commit_rejects_default_output_symlink_outside_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

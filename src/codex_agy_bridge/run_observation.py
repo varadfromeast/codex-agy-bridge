@@ -101,11 +101,10 @@ def _project_snapshot(
         else _attention(evidence.recent_events)
     )
     latest_event = evidence.latest_event
-    latest_kind = latest_event.get("kind") if latest_event else None
     if (
         detect_prompts
         and state["status"] in ACTIVE_STATUSES
-        and latest_kind not in ATTENTION_SUPPRESSING_EVENTS
+        and not _attention_detection_suppressed(evidence.recent_events)
     ):
         effective_timeout = (
             0.0 if attention.get("required") else prompt_capture_timeout_seconds
@@ -136,6 +135,17 @@ def _project_snapshot(
     )
 
 
+def _attention_detection_suppressed(events: Sequence[Mapping[str, Any]]) -> bool:
+    """Return whether the newest attention transition resolved the prompt."""
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind in ATTENTION_SUPPRESSING_EVENTS:
+            return True
+        if kind in {"needs_attention", "mcp_input_failed"}:
+            return False
+    return False
+
+
 def _attention(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for event in reversed(events):
         kind = event.get("kind")
@@ -151,7 +161,7 @@ def _attention(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             reason = event.get("category") or kind
             prompt = observed.get("prompt")
             suggested_inputs = observed.get("suggested_inputs")
-            return {
+            attention = {
                 "required": True,
                 "reason": reason,
                 "prompt": prompt if isinstance(prompt, str) else None,
@@ -162,6 +172,13 @@ def _attention(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                     else []
                 ),
             }
+            source = event.get("source")
+            if isinstance(source, str):
+                attention["source"] = source
+            dedupe_key = event.get("dedupe_key")
+            if isinstance(dedupe_key, str):
+                attention["dedupe_key"] = dedupe_key
+            return attention
     return {"required": False, "reason": None, "prompt": None, "suggested_inputs": []}
 
 

@@ -331,6 +331,34 @@ def review_branch(
     )
 
 
+def review_files(
+    *,
+    paths: list[str],
+    issue: str,
+    workspace: str,
+    output_file: str | None = None,
+    timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start a typed review Run for explicitly requested local files."""
+    return _orchestrator.review_files(
+        paths=paths,
+        issue=issue,
+        workspace=workspace,
+        output_file=output_file,
+        timeout_seconds=timeout_seconds,
+        conversation_id=conversation_id,
+        dangerously_skip_permissions=dangerously_skip_permissions,
+        model=model,
+        sandbox=sandbox,
+        additional_directories=additional_directories,
+    )
+
+
 def review_result(run_id: str) -> dict[str, Any]:
     """Read, validate, and summarize a typed review artifact."""
     return _orchestrator.review_result(run_id)

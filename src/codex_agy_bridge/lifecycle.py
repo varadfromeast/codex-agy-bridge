@@ -11,14 +11,16 @@ from pathlib import Path
 
 from filelock import FileLock
 
+from codex_agy_bridge import core
+
 SERVERS_DIR_NAME = "servers"
 
 
 def register_server_instance(state_root: Path) -> None:
     """Register this stdio server without terminating sibling client servers."""
-    state_root.mkdir(parents=True, exist_ok=True)
+    core.ensure_private_directory(state_root)
     servers = state_root / SERVERS_DIR_NAME
-    servers.mkdir(parents=True, exist_ok=True)
+    core.ensure_private_directory(servers)
     current_pid = os.getpid()
     registration = servers / f"{current_pid}.json"
 
@@ -28,17 +30,13 @@ def register_server_instance(state_root: Path) -> None:
             if pid is None or not _process_alive(pid):
                 with suppress(OSError):
                     path.unlink()
-        registration.write_text(
-            json.dumps(
-                {
-                    "pid": current_pid,
-                    "parent_pid": os.getppid(),
-                    "started_at": time.time(),
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
+        core.atomic_write_json(
+            registration,
+            {
+                "pid": current_pid,
+                "parent_pid": os.getppid(),
+                "started_at": time.time(),
+            },
         )
 
     atexit.register(_clear_registration, registration, current_pid)
