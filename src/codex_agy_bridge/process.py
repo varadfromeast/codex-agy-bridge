@@ -11,6 +11,8 @@ from typing import Any
 class ProcessManager:
     """Interface abstraction for spawning and tracking POSIX processes."""
 
+    supports_identity = False
+
     def spawn(self, args: list[str], cwd: str, stdout: Any, stderr: Any) -> Any:
         """Spawn a background process.
 
@@ -36,6 +38,10 @@ class ProcessManager:
         """
         raise NotImplementedError
 
+    def command_line(self, pid: int) -> str | None:
+        """Return the command line currently owned by ``pid``."""
+        return None
+
     def killpg(self, gpid: int, sig: int) -> None:
         """Send signal to a process group.
 
@@ -57,6 +63,8 @@ class ProcessManager:
 
 class LocalProcessManager(ProcessManager):
     """Production ProcessManager running actual local processes."""
+
+    supports_identity = True
 
     def spawn(self, args: list[str], cwd: str, stdout: Any, stderr: Any) -> Any:
         """Spawn a local detached subprocess."""
@@ -91,6 +99,22 @@ class LocalProcessManager(ProcessManager):
         except (OSError, TypeError, ValueError):
             return False
         return True
+
+    def command_line(self, pid: int) -> str | None:
+        if not pid:
+            return None
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "command=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        command = result.stdout.strip()
+        return command or None
 
     def killpg(self, gpid: int, sig: int) -> None:
         """Send signal to a local process group, ignoring lookup errors."""

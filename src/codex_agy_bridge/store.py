@@ -22,31 +22,24 @@ from codex_agy_bridge.state import (
 )
 
 
-class RunStore(Protocol):
-    """Protocol defining persistence operations for runs and goals."""
+class GoalSchedulerStore(Protocol):
+    """Persistence interface required by Goal scheduling."""
 
-    def get_run(self, run_id: str) -> RunState:
-        """Fetch a run state by ID.
+    def get_goal(self, goal_id: str) -> GoalState: ...
 
-        Args:
-            run_id: Unique run identifier
+    def save_goal(self, goal_id: str, state: GoalState) -> None: ...
 
-        Returns:
-            The loaded RunState dict
+    def update_goal(self, goal_id: str, changes: dict[str, Any]) -> GoalState: ...
 
-        Raises:
-            RunNotFoundError: If the run ID does not exist
-        """
-        ...
+    def lock_goal(self, goal_id: str) -> AbstractContextManager[Any]: ...
 
-    def save_run(self, run_id: str, state: RunState) -> None:
-        """Persist a run state.
+    def get_run(self, run_id: str) -> RunState: ...
 
-        Args:
-            run_id: Unique run identifier
-            state: The RunState dict to save
-        """
-        ...
+
+class RunStore(GoalSchedulerStore, Protocol):
+    """Persistence interface for orchestration of runs and goals."""
+
+    def save_run(self, run_id: str, state: RunState) -> None: ...
 
     def update_run(
         self,
@@ -54,66 +47,11 @@ class RunStore(Protocol):
         changes: dict[str, Any],
         *,
         require_active: bool = False,
-    ) -> RunState:
-        """Atomically update a run, optionally only while it remains active."""
-        ...
+    ) -> RunState: ...
 
-    def get_goal(self, goal_id: str) -> GoalState:
-        """Fetch a goal state by ID.
+    def lock_run(self, run_id: str) -> AbstractContextManager[Any]: ...
 
-        Args:
-            goal_id: Unique goal identifier
-
-        Returns:
-            The loaded GoalState dict
-
-        Raises:
-            FileNotFoundError: If the goal ID does not exist
-        """
-        ...
-
-    def save_goal(self, goal_id: str, state: GoalState) -> None:
-        """Persist a goal state.
-
-        Args:
-            goal_id: Unique goal identifier
-            state: The GoalState dict to save
-        """
-        ...
-
-    def update_goal(self, goal_id: str, changes: dict[str, Any]) -> GoalState:
-        """Atomically update a goal."""
-        ...
-
-    def lock_run(self, run_id: str) -> AbstractContextManager[Any]:
-        """Acquire an exclusive transactional lock for a run.
-
-        Args:
-            run_id: Unique run identifier
-
-        Returns:
-            A context manager representing the lock transaction
-        """
-        ...
-
-    def lock_goal(self, goal_id: str) -> AbstractContextManager[Any]:
-        """Acquire an exclusive transactional lock for a goal.
-
-        Args:
-            goal_id: Unique goal identifier
-
-        Returns:
-            A context manager representing the lock transaction
-        """
-        ...
-
-    def list_active_runs(self) -> list[RunState]:
-        """List all currently active runs.
-
-        Returns:
-            List of active RunState dicts
-        """
-        ...
+    def list_active_runs(self) -> list[RunState]: ...
 
 
 class DiskRunStore:

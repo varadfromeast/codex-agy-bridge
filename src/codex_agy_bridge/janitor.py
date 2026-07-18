@@ -116,7 +116,10 @@ class RunJanitor:
                     )
                     if not runner_alive and not agy_alive:
                         tmux_session = state.get("tmux_session")
-                        if tmux_session:
+                        if (
+                            isinstance(tmux_session, str)
+                            and tmux_session.endswith(run_id[-8:])
+                        ):
                             TmuxSession(
                                 self.state_root / "runs" / run_id,
                                 session_name=tmux_session,

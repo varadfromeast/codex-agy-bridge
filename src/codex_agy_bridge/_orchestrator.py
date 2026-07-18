@@ -3,16 +3,12 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
-import signal
 import sys
 import threading
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import suppress
-from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,28 +21,25 @@ from codex_agy_bridge import (
     interactive_input,
     labels,
     review,
-    run_control_snapshot,
     run_input_delivery,
-    run_lifecycle,
-    run_results,
     session_events,
     terminal,
-    terminal_evidence,
-    waiter,
 )
 from codex_agy_bridge.cli import AntigravityCli
 from codex_agy_bridge.exceptions import (
     AuthenticationRequiredError,
     ConcurrencyLimitExceeded,
-    RunNotFoundError,
     WorkspaceAccessError,
 )
 from codex_agy_bridge.execution import ExecutionSession, TmuxSession
-from codex_agy_bridge.process import LocalProcessManager, ProcessManager
-from codex_agy_bridge.run_request import (
-    RunRequest,
-    normalize_additional_directories,
+from codex_agy_bridge.goal_scheduler import (
+    GoalScheduler,
+    GoalTargetLaunch,
 )
+from codex_agy_bridge.process import LocalProcessManager, ProcessManager
+from codex_agy_bridge.run_cancellation import RunCanceler
+from codex_agy_bridge.run_observation import RunObservation, WaitCondition
+from codex_agy_bridge.run_request import RunRequest
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
     GoalState,
@@ -65,7 +58,6 @@ STARTUP_POLL_SECONDS = 0.02
 CANCEL_RUNNER_GRACE_SECONDS = float(
     os.environ.get("AGY_BRIDGE_CANCEL_RUNNER_GRACE_SECONDS", "1.0")
 )
-LOGGER = logging.getLogger(__name__)
 
 
 def _mcp_wait_slice_seconds() -> int:
@@ -105,30 +97,6 @@ def _global_max_parallel() -> int:
             f"1 and {DEFAULT_MAX_PARALLEL}"
         )
     return min(value, DEFAULT_MAX_PARALLEL)
-
-
-def _observe_cursor(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        event_id = value.get("event_key") or value.get("event_id")
-        transcript_step = value.get("transcript_step", -1)
-    else:
-        event_id = value
-        transcript_step = -1
-    return {
-        "event_id": event_id if isinstance(event_id, str) else None,
-        "transcript_step": transcript_step if isinstance(transcript_step, int) else -1,
-    }
-
-
-def _run_age_seconds(state: RunState) -> float | None:
-    started_at = state.get("started_at") or state.get("created_at")
-    if not isinstance(started_at, str):
-        return None
-    try:
-        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return max(0.0, time.time() - started.timestamp())
 
 
 def _authentication_status(cli: Any) -> dict[str, Any]:
@@ -209,6 +177,11 @@ class RunnerOrchestrator:
         self.startup_wait_seconds = max(0.0, startup_wait_seconds)
         self._authentication_status: dict[str, Any] | None = None
         self._authentication_lock = threading.Lock()
+        self._run_observation = RunObservation(
+            state_root=self.state_root,
+            load_state=self.load_state,
+            run_dir=self.run_dir,
+        )
 
     @property
     def state_root(self) -> Path:
@@ -245,6 +218,43 @@ class RunnerOrchestrator:
         """
         return self.session_factory(state, self.run_dir(state["run_id"]))
 
+    def _canceler(self) -> RunCanceler:
+        return RunCanceler(
+            state_root=self.state_root,
+            store=self.store,
+            process_manager=self.process_manager,
+            load_state=self.load_state,
+            session_factory=self.session_factory,
+            runner_grace_seconds=CANCEL_RUNNER_GRACE_SECONDS,
+            term_grace_seconds=CANCEL_TERM_GRACE_SECONDS,
+        )
+
+    def _goal_scheduler(self) -> GoalScheduler:
+        return GoalScheduler(
+            state_root=self.state_root,
+            store=self.store,
+            launch_run=self._launch_goal_run,
+            observation=self._run_observation,
+            cli=self.cli,
+            default_model=DEFAULT_MODEL,
+            max_parallel_limit=DEFAULT_MAX_PARALLEL,
+        )
+
+    def _launch_goal_run(self, launch: GoalTargetLaunch) -> RunState:
+        return self.create_run(
+            prompt=launch.prompt,
+            workspace=launch.workspace,
+            timeout_seconds=launch.timeout_seconds,
+            conversation_id=None,
+            dangerously_skip_permissions=launch.dangerously_skip_permissions,
+            model=launch.model,
+            sandbox=launch.sandbox,
+            additional_directories=launch.additional_directories,
+            goal_id=launch.goal_id,
+            target_name=launch.target_name,
+            _goal_max_parallel=launch.goal_max_parallel,
+        )
+
     def run_dir(self, run_id: str) -> Path:
         """Get the run directory for the given run_id.
 
@@ -258,7 +268,7 @@ class RunnerOrchestrator:
 
     def result_artifact_path(self, run_id: str) -> Path:
         """Return the immutable final-result artifact path for a Run."""
-        return run_results.result_artifact_path(self.run_dir(run_id))
+        return self._run_observation.result_artifact_path(run_id)
 
     def goal_dir(self, goal_id: str) -> Path:
         """Get the goal directory for the given goal_id.
@@ -335,7 +345,7 @@ class RunnerOrchestrator:
         Returns:
             The GoalState dict.
         """
-        return self.store.get_goal(goal_id)
+        return self._goal_scheduler().load(goal_id)
 
     def update_goal(self, goal_id: str, **changes: Any) -> GoalState:
         """Update fields in a goal's state.
@@ -347,7 +357,7 @@ class RunnerOrchestrator:
         Returns:
             The updated GoalState dict.
         """
-        return self.store.update_goal(goal_id, changes)
+        return self._goal_scheduler().update(goal_id, **changes)
 
     def active_runs(self) -> list[RunState]:
         """List all active runs.
@@ -404,6 +414,7 @@ class RunnerOrchestrator:
         goal_id: str | None = None,
         target_name: str | None = None,
         expected_file: str | None = None,
+        _goal_max_parallel: int | None = None,
     ) -> RunState:
         """Start a new asynchronous Antigravity conversation or reuse duplicate.
 
@@ -501,7 +512,11 @@ class RunnerOrchestrator:
                     f"Global parallel run limit {global_max_parallel} reached ({ids})."
                 )
             if goal_id:
-                goal_max_parallel = self.load_goal(goal_id)["max_parallel"]
+                goal_max_parallel = (
+                    self.load_goal(goal_id)["max_parallel"]
+                    if _goal_max_parallel is None
+                    else _goal_max_parallel
+                )
                 goal_running = [
                     state for state in running if state.get("goal_id") == goal_id
                 ]
@@ -599,9 +614,8 @@ class RunnerOrchestrator:
         runner_exited = runner_pid is not None and not self.process_manager.is_alive(
             runner_pid
         )
-        no_recorded_process_is_alive = (
-            runner_pid is None
-            and (agy_pid is None or not self.process_manager.is_alive(agy_pid))
+        no_recorded_process_is_alive = runner_pid is None and (
+            agy_pid is None or not self.process_manager.is_alive(agy_pid)
         )
         if (
             state["status"] in ACTIVE_STATUSES
@@ -641,17 +655,13 @@ class RunnerOrchestrator:
                     },
                 )
             if state["status"] in {"failed", "canceled"} and (
-                self._reaper_can_kill_session(state)
+                self._canceler().can_reap_session(state)
             ):
                 self.get_session(state).kill()
         if compact:
-            snapshot = run_control_snapshot.RunControlSnapshot.from_run(
-                run_id,
-                state_root=self.state_root,
-                load_state=self.load_state,
-            )
+            snapshot = self._run_observation.snapshot(run_id, state=state)
             conversation_id = state.get("conversation_id")
-            latest = core.latest_step(conversation_id) if conversation_id else None
+            latest = self._run_observation.latest_step(state)
             execution_mode = state.get("execution_mode", "print")
             agent_mode = state.get("agent_mode", "task")
             execution_surface = state.get("execution_surface", "headless")
@@ -761,37 +771,14 @@ class RunnerOrchestrator:
         include_content: bool = False,
         max_content_chars: int = 500,
     ) -> dict[str, Any]:
-        """Fetch step-by-step progress events for the run.
-
-        Args:
-            run_id: The unique run identifier.
-            after_step: Get steps after this index.
-            limit: Max steps to return.
-            include_content: Include message body/thinking.
-            max_content_chars: Length limit for content snippets.
-
-        Returns:
-            Dict containing conversation ID and a list of steps.
-        """
-        conversation_id = self.load_state(run_id).get("conversation_id")
-        if not conversation_id:
-            return {
-                "run_id": run_id,
-                "conversation_id": None,
-                "steps": [],
-                "message": "Conversation id has not been observed yet.",
-            }
-        return {
-            "run_id": run_id,
-            "conversation_id": conversation_id,
-            "steps": core.compact_steps(
-                conversation_id,
-                after_step=after_step,
-                limit=limit,
-                include_content=include_content,
-                max_content_chars=max_content_chars,
-            ),
-        }
+        """Fetch step-by-step progress events for the run."""
+        return self._run_observation.transcript(
+            run_id,
+            after_step=after_step,
+            limit=limit,
+            include_content=include_content,
+            max_content_chars=max_content_chars,
+        )
 
     def observe(
         self,
@@ -801,85 +788,11 @@ class RunnerOrchestrator:
         include_terminal_tail: bool = False,
     ) -> dict[str, Any]:
         """Return merged observable state for one or more runs."""
-        if not run_ids:
-            raise ValueError("run_ids must contain at least one run_id")
-        cursors = after or {}
-        runs: dict[str, Any] = {}
-        for run_id in run_ids:
-            state = self.load_state(run_id)
-            run_dir = self.run_dir(run_id)
-            cursor = _observe_cursor(cursors.get(run_id))
-            snapshot = run_control_snapshot.RunControlSnapshot.from_run(
-                run_id,
-                state_root=self.state_root,
-                load_state=self.load_state,
-            )
-            event_page = session_events.read_event_page(
-                run_dir,
-                after_event_id=cursor["event_id"],
-            )
-            events = event_page["events"]
-            delivered_event = events[-1] if events else None
-            delivered_event_id = (
-                delivered_event.get("run_seq")
-                if delivered_event is not None
-                else cursor["event_id"]
-            )
-            delivered_event_key = (
-                delivered_event.get("event_id")
-                if delivered_event is not None
-                else cursor["event_id"]
-            )
-            conversation_id = state.get("conversation_id")
-            transcript_page = (
-                core.compact_step_page(
-                    conversation_id,
-                    after_step=cursor["transcript_step"],
-                    limit=50,
-                )
-                if conversation_id
-                else {
-                    "steps": [],
-                    "next_after": cursor["transcript_step"],
-                    "has_more": False,
-                }
-            )
-            steps = transcript_page["steps"]
-            runs[run_id] = {
-                "run_id": run_id,
-                "state": core.public_state(dict(state)),
-                "lifecycle_status": snapshot["lifecycle_status"],
-                "activity_state": snapshot["activity_state"],
-                "attention": snapshot["attention"],
-                "can_send_text": snapshot["can_send_text"],
-                "events": events,
-                "has_more_events": event_page["has_more"],
-                "transcript": {
-                    "conversation_id": conversation_id,
-                    "steps": steps,
-                    "has_more": transcript_page["has_more"],
-                },
-                "cursor": {
-                    "event_id": delivered_event_id,
-                    "event_key": delivered_event_key,
-                    "transcript_step": transcript_page["next_after"],
-                },
-                "event_head": {
-                    "event_id": event_page["head"],
-                    "event_key": snapshot["latest_event_key"],
-                },
-                "terminal": terminal_evidence.observe_terminal(
-                    run_dir,
-                    state,
-                    tail_available=bool(snapshot["terminal_tail_available"]),
-                    include_tail=include_terminal_tail,
-                ),
-                "provider_health": core.run_provider_health(run_dir),
-            }
-        return {
-            "run_ids": run_ids,
-            "runs": runs,
-        }
+        return self._run_observation.observe(
+            run_ids,
+            after=after,
+            include_terminal_tail=include_terminal_tail,
+        )
 
     def terminal_snapshot(
         self,
@@ -895,21 +808,8 @@ class RunnerOrchestrator:
         and whether direct text delivery is currently possible. It does not
         classify prompts or append notification events.
         """
-        state = self.load_state(run_id)
-        run_dir = self.run_dir(run_id)
-        snapshot = run_control_snapshot.RunControlSnapshot.from_run(
+        return self._run_observation.terminal_snapshot(
             run_id,
-            state_root=self.state_root,
-            load_state=self.load_state,
-            prompt_capture_timeout_seconds=0.0,
-        )
-        return terminal_evidence.terminal_snapshot(
-            run_id=run_id,
-            state=state,
-            run_dir=run_dir,
-            lifecycle_status=snapshot["lifecycle_status"],
-            activity_state=snapshot["activity_state"],
-            can_send_text=bool(snapshot["can_send_text"]),
             max_chars=max_chars,
             timeout_seconds=timeout_seconds,
         )
@@ -923,16 +823,7 @@ class RunnerOrchestrator:
         Returns:
             Dict containing status, conversation ID, and result/error.
         """
-        state = self.load_state(run_id)
-        conversation_id = state.get("conversation_id")
-        result = run_results.metadata(state, self.run_dir(run_id))
-        return {
-            "run_id": run_id,
-            "status": state["status"],
-            "conversation_id": conversation_id,
-            "result": result,
-            "error": state.get("error"),
-        }
+        return self._run_observation.result(run_id)
 
     def result_read(
         self,
@@ -942,10 +833,8 @@ class RunnerOrchestrator:
         max_bytes: int = 65_536,
     ) -> dict[str, Any]:
         """Read a bounded byte chunk from a Run's immutable final result."""
-        state = self.load_state(run_id)
-        return run_results.read_chunk(
-            state,
-            self.run_dir(run_id),
+        return self._run_observation.result_read(
+            run_id,
             offset_bytes=offset_bytes,
             max_bytes=max_bytes,
         )
@@ -1048,147 +937,22 @@ class RunnerOrchestrator:
         self,
         run_ids: list[str],
         *,
-        condition: waiter.WaitCondition = "any_attention",
-        after: dict[str, str] | None = None,
+        condition: WaitCondition = "any_attention",
+        after: dict[str, Any] | None = None,
         timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         """Block until selected runs have durable events worth reporting."""
-        if not run_ids:
-            raise ValueError("run_ids must not be empty")
-        requested_timeout_seconds = max(0, int(timeout_seconds))
-        wait_slice_seconds = _mcp_wait_slice_seconds()
-        effective_timeout_seconds = min(requested_timeout_seconds, wait_slice_seconds)
-        run_dirs = {}
-        for run_id in run_ids:
-            self.load_state(run_id)
-            run_dirs[run_id] = self.run_dir(run_id)
-        result = waiter.wait_for_runs(
-            run_dirs,
-            state_root=self.state_root,
-            load_state=self.load_state,
+        return self._run_observation.wait(
+            run_ids,
             condition=condition,
             after=after,
-            timeout_seconds=effective_timeout_seconds,
+            timeout_seconds=timeout_seconds,
+            max_slice_seconds=_mcp_wait_slice_seconds(),
         )
-        if effective_timeout_seconds != requested_timeout_seconds:
-            result["wait"] = {
-                "requested_timeout_seconds": requested_timeout_seconds,
-                "effective_timeout_seconds": effective_timeout_seconds,
-                "capped_by": "AGY_BRIDGE_MCP_WAIT_SLICE_SECONDS",
-                "next": (
-                    "Call agy_run_wait again with the returned next_after "
-                    "cursors, or call agy_run_observe/agy_review_result for a "
-                    "non-blocking snapshot."
-                ),
-            }
-        return result
-
-    def _discard_result_artifact(self, run_id: str) -> None:
-        run_results.discard_artifact(self.run_dir(run_id))
 
     def cancel(self, run_id: str) -> dict[str, Any]:
-        """Request cancel of an active run and kill execution session.
-
-        Args:
-            run_id: The unique run identifier.
-
-        Returns:
-            The updated public RunState dict.
-        """
-        state = self.load_state(run_id)
-        if state["status"] not in ACTIVE_STATUSES:
-            return core.public_state(cast(dict[str, Any], state))
-        cancel_transition = run_lifecycle.request_cancel(self.store, run_id)
-        state = cancel_transition["state"]
-        if not cancel_transition["applied"] and state["status"] != "cancel_requested":
-            return core.public_state(cast(dict[str, Any], state))
-        cancel_file = self.run_dir(run_id) / "cancel"
-        cancel_file.parent.mkdir(parents=True, exist_ok=True)
-        cancel_file.touch()
-        if cancel_transition["applied"]:
-            session_events.append_event(
-                self.run_dir(run_id),
-                "cancel_requested",
-                {"status": "cancel_requested"},
-            )
-        grace_state = self._wait_for_cancel_ack(run_id)
-        if grace_state is not None and grace_state["status"] not in ACTIVE_STATUSES:
-            if grace_state["status"] == "canceled":
-                self._discard_result_artifact(run_id)
-            return core.public_state(cast(dict[str, Any], grace_state))
-        session = self.get_session(state)
-        self._terminate_for_cancel(state, session)
-        self._discard_result_artifact(run_id)
-        cancel_ack = run_lifecycle.acknowledge_cancel(
-            self.store,
-            run_id,
-            {
-                "result": None,
-                "error": None,
-                "finished_at": core.utc_now(),
-            },
-        )
-        state = cancel_ack["state"]
-        if cancel_ack["applied"]:
-            session_events.append_event(
-                self.run_dir(run_id),
-                "run_canceled",
-                {"status": "canceled"},
-            )
-        return core.public_state(cast(dict[str, Any], state))
-
-    def _wait_for_cancel_ack(self, run_id: str) -> RunState | None:
-        if CANCEL_RUNNER_GRACE_SECONDS <= 0:
-            return None
-        deadline = time.monotonic() + CANCEL_RUNNER_GRACE_SECONDS
-        while time.monotonic() < deadline:
-            state = self.load_state(run_id)
-            if state["status"] not in ACTIVE_STATUSES:
-                return state
-            if state["status"] != "cancel_requested":
-                return state
-            time.sleep(0.05)
-        return self.load_state(run_id)
-
-    def _terminate_for_cancel(
-        self,
-        state: RunState,
-        session: ExecutionSession,
-    ) -> None:
-        pids = [
-            pid
-            for pid in (state.get("runner_pid"), state.get("agy_pid"))
-            if isinstance(pid, int) and pid > 0
-        ]
-        for pid in pids:
-            with suppress(OSError, ValueError, TypeError):
-                self.process_manager.killpg(pid, signal.SIGTERM)
-        deadline = time.monotonic() + CANCEL_TERM_GRACE_SECONDS
-        while pids and time.monotonic() < deadline:
-            if all(not self._process_alive(pid) for pid in pids):
-                break
-            time.sleep(0.02)
-        with suppress(Exception):
-            session.kill()
-        for pid in pids:
-            with suppress(OSError, ValueError, TypeError):
-                self.process_manager.killpg(pid, signal.SIGKILL)
-
-    def _process_alive(self, pid: int) -> bool:
-        try:
-            return self.process_manager.is_alive(pid)
-        except (OSError, ValueError, TypeError):
-            LOGGER.debug("Suppressed process liveness failure", exc_info=True)
-        return False
-
-    def _reaper_can_kill_session(self, state: RunState) -> bool:
-        timeout = state.get("timeout_seconds")
-        if not isinstance(timeout, int):
-            return True
-        age_seconds = _run_age_seconds(state)
-        if age_seconds is None:
-            return True
-        return age_seconds >= max(0, timeout + 30)
+        """Converge an active Run to canceled through the cancellation module."""
+        return self._canceler().cancel(run_id)
 
     def create_goal(
         self,
@@ -1217,47 +981,15 @@ class RunnerOrchestrator:
         Raises:
             ValueError: For invalid arguments.
         """
-        root = Path(workspace).expanduser().resolve()
-        if not objective.strip() or not root.is_dir():
-            raise ValueError("objective and an existing workspace are required")
-        if (
-            not isinstance(max_parallel, int)
-            or isinstance(max_parallel, bool)
-            or max_parallel < 1
-            or max_parallel > DEFAULT_MAX_PARALLEL
-        ):
-            raise ValueError(
-                f"max_parallel must be an integer between 1 and {DEFAULT_MAX_PARALLEL}"
-            )
-        model = DEFAULT_MODEL if model is None else model
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("model must not be empty")
-        if model != DEFAULT_MODEL:
-            self.cli.validate_model(model)
-        if dangerously_skip_permissions is not True:
-            raise ValueError("dangerously_skip_permissions must be true")
-        normalized_directories = normalize_additional_directories(
-            additional_directories or [],
-            workspace=root,
+        return self._goal_scheduler().create(
+            objective=objective,
+            workspace=workspace,
+            max_parallel=max_parallel,
+            model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+            dangerously_skip_permissions=dangerously_skip_permissions,
         )
-        goal_id = f"goal-{uuid.uuid4().hex[:10]}"
-        now = core.utc_now()
-        state: GoalState = {
-            "goal_id": goal_id,
-            "objective": objective,
-            "workspace": str(root),
-            "model": model,
-            "max_parallel": max_parallel,
-            "sandbox": sandbox,
-            "additional_directories": list(normalized_directories),
-            "dangerously_skip_permissions": True,
-            "targets": {},
-            "created_at": now,
-            "updated_at": now,
-        }
-        core.ensure_private_directory(self.state_root)
-        self.store.save_goal(goal_id, state)
-        return state
 
     def start_goal_target(
         self,
@@ -1286,36 +1018,15 @@ class RunnerOrchestrator:
         Raises:
             ValueError: For duplicate target names or empty inputs.
         """
-        with self.store.lock_goal(goal_id):
-            goal = self.load_goal(goal_id)
-            if not target_name.strip() or target_name in goal["targets"]:
-                raise ValueError(
-                    "target_name must be non-empty and unique within the goal"
-                )
-            state = self.create_run(
-                prompt=prompt,
-                workspace=goal["workspace"],
-                timeout_seconds=timeout_seconds,
-                conversation_id=None,
-                dangerously_skip_permissions=(
-                    goal.get("dangerously_skip_permissions", True)
-                    if dangerously_skip_permissions is None
-                    else dangerously_skip_permissions
-                ),
-                model=goal["model"],
-                sandbox=goal.get("sandbox", False) if sandbox is None else sandbox,
-                additional_directories=(
-                    goal.get("additional_directories", [])
-                    if additional_directories is None
-                    else additional_directories
-                ),
-                goal_id=goal_id,
-                target_name=target_name,
-            )
-            goal["targets"] = {**goal["targets"], target_name: state["run_id"]}
-            goal["updated_at"] = core.utc_now()
-            self.store.save_goal(goal_id, goal)
-            return state
+        return self._goal_scheduler().start_target(
+            goal_id=goal_id,
+            target_name=target_name,
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+        )
 
     def authentication_status(
         self,
@@ -1389,63 +1100,7 @@ class RunnerOrchestrator:
         Returns:
             Dict containing goal details, aggregate status, and targets.
         """
-        goal = self.load_goal(goal_id)
-        targets = {}
-        for name, run_id in goal["targets"].items():
-            try:
-                state = self.load_state(run_id)
-            except (RunNotFoundError, OSError, ValueError) as error:
-                targets[name] = {
-                    "run_id": run_id,
-                    "status": "failed",
-                    "lifecycle_status": "failed",
-                    "activity_state": "terminal",
-                    "attention_required": True,
-                    "attention": {
-                        "required": True,
-                        "reason": "state_unavailable",
-                        "prompt": None,
-                        "suggested_inputs": [],
-                    },
-                    "conversation_id": None,
-                    "error": f"Target state unavailable: {error}",
-                }
-                continue
-            snapshot = run_control_snapshot.RunControlSnapshot.from_run(
-                run_id,
-                state_root=self.state_root,
-                load_state=self.load_state,
-            )
-            targets[name] = {
-                "run_id": run_id,
-                "status": state["status"],
-                "lifecycle_status": snapshot["lifecycle_status"],
-                "activity_state": snapshot["activity_state"],
-                "attention_required": snapshot["attention"]["required"],
-                "attention": snapshot["attention"],
-                "can_send_text": snapshot["can_send_text"],
-                "latest_event_id": snapshot["latest_event_id"],
-                "latest_event_key": snapshot["latest_event_key"],
-                "latest_transcript_step": snapshot["latest_transcript_step"],
-                "terminal_tail_available": snapshot["terminal_tail_available"],
-                "conversation_id": state.get("conversation_id"),
-                "error": state.get("error"),
-                "session_label": state.get("session_label"),
-                "tmux_session": state.get("tmux_session"),
-                "result": run_results.metadata(state, self.run_dir(run_id)),
-            }
-        statuses = {item["status"] for item in targets.values()}
-        if statuses and statuses <= {"completed"}:
-            aggregate = "completed"
-        elif "failed" in statuses:
-            aggregate = "failed"
-        elif statuses & ACTIVE_STATUSES:
-            aggregate = "running"
-        elif "canceled" in statuses:
-            aggregate = "canceled"
-        else:
-            aggregate = "pending"
-        return {**goal, "status": aggregate, "targets": targets}
+        return self._goal_scheduler().status(goal_id)
 
     def open_terminal(self, run_id: str) -> dict[str, Any]:
         """Open a visible macOS Terminal attached to the run's Tmux session.

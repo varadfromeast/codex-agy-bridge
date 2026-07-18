@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
+import tempfile
 
+import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -156,3 +159,73 @@ async def test_stdio_initialization_and_tool_contract(tmp_path):
         tool for tool in tools.tools if tool.name == "agy_review_result"
     )
     assert list(review_result.inputSchema["properties"]) == ["run_id"]
+
+
+@pytest.mark.anyio
+async def test_stdio_server_does_not_leak_agent_terminal_output(tmp_path):
+    marker = "AGY_OUTPUT_MUST_NOT_REACH_MCP_STDERR"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_agy = fake_bin / "agy"
+    fake_agy.write_text(
+        f"""#!/usr/bin/env python3
+import pathlib
+import sys
+import time
+
+if "--help" in sys.argv:
+    print("--prompt-interactive")
+    raise SystemExit(0)
+if "models" in sys.argv:
+    log_path = pathlib.Path(sys.argv[sys.argv.index("--log-file") + 1])
+    log_path.write_text("OAuth: authenticated successfully\\n")
+    print("Fake Model")
+    raise SystemExit(0)
+print("\\x1b[2J{marker}", flush=True)
+print("\\x1b[31m{marker}\\x1b[0m", file=sys.stderr, flush=True)
+time.sleep(10)
+""",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(fake_agy.stat().st_mode | stat.S_IXUSR)
+    fake_osascript = fake_bin / "osascript"
+    fake_osascript.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_osascript.chmod(fake_osascript.stat().st_mode | stat.S_IXUSR)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "AGY_CMD": str(fake_agy),
+            "AGY_BRIDGE_STATE_DIR": str(tmp_path / "state"),
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+        }
+    )
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "codex_agy_bridge.server"],
+        env=environment,
+    )
+
+    with tempfile.TemporaryFile(mode="w+") as errlog:
+        async with (
+            stdio_client(parameters, errlog=errlog) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            started = await session.call_tool(
+                "agy_run_start",
+                {
+                    "prompt": "emit terminal control sequences",
+                    "workspace": str(workspace),
+                    "model": None,
+                },
+            )
+            assert not started.isError
+            await anyio.sleep(0.2)
+            run_id = started.structuredContent["run_id"]
+            await session.call_tool("agy_run_cancel", {"run_id": run_id})
+
+        errlog.seek(0)
+        assert marker not in errlog.read()
