@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
 
 from codex_agy_bridge import diagnostics, orchestration, terminal, waiter
-from codex_agy_bridge.core import STATE_ROOT, public_state
+from codex_agy_bridge.core import STATE_ROOT, ensure_private_directory, public_state
 from codex_agy_bridge.exceptions import AuthenticationRequiredError
 from codex_agy_bridge.lifecycle import register_server_instance
 
@@ -77,7 +77,8 @@ mcp = StrictFastMCP(
         "are rejected with fresh context. agy_run_result reads final result "
         "metadata or bounded chunks. agy_start_with_expected_file starts a task "
         "Run that cannot complete successfully until the requested file exists and is "
-        "non-empty. agy_review_commit and agy_review_branch start typed review "
+        "non-empty; use it for ad hoc reviews and other report-producing tasks. "
+        "agy_review_commit, agy_review_branch, and agy_review_files start typed review "
         "Runs that write strict JSON artifacts; keep review prompts focused and "
         "use narrow scope_paths when possible. Prefer agy_review_result after "
         "completion. Wait for terminal completion with agy_run_wait rather than "
@@ -143,6 +144,7 @@ def agy_run_start(
     mode="task" starts a normal bridge-owned task. mode="interactive" starts a
     persistent conversation session that should be used sparingly. Supplying
     conversation_id continues that exact Antigravity conversation.
+    Use agy_start_with_expected_file for reviews and other artifact-producing tasks.
     dangerously_skip_permissions must be true; the bridge always forwards
     --dangerously-skip-permissions to Antigravity.
     """
@@ -413,10 +415,41 @@ def agy_review_branch(
 
 
 @mcp.tool()
+def agy_review_files(
+    paths: list[str],
+    issue: str,
+    workspace: str,
+    output_file: str | None = None,
+    timeout_seconds: int = 900,
+    conversation_id: str | None = None,
+    dangerously_skip_permissions: bool = True,
+    model: str | None = DEFAULT_MODEL,
+    sandbox: bool = False,
+    additional_directories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start an artifact-gated typed review Run for local files."""
+    try:
+        return orchestration.review_files(
+            paths=paths,
+            issue=issue,
+            workspace=workspace,
+            output_file=output_file,
+            timeout_seconds=timeout_seconds,
+            conversation_id=conversation_id,
+            dangerously_skip_permissions=dangerously_skip_permissions,
+            model=model,
+            sandbox=sandbox,
+            additional_directories=additional_directories,
+        )
+    except AuthenticationRequiredError as error:
+        return cast(dict[str, Any], error.payload)
+
+
+@mcp.tool()
 def agy_review_result(run_id: str) -> dict[str, Any]:
     """Validate and summarize the artifact from a typed review Run.
 
-    Preferred way to consume completed agy_review_commit/agy_review_branch runs.
+    Preferred way to consume completed commit, branch, or file review Runs.
     """
     return orchestration.review_result(run_id)
 
@@ -511,7 +544,7 @@ def agy_admin(
 
 
 def main() -> None:
-    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(STATE_ROOT)
     register_server_instance(STATE_ROOT)
     mcp.run(transport="stdio")
 

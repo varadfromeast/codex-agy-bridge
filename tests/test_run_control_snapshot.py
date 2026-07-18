@@ -30,6 +30,8 @@ def test_run_control_snapshot_projects_attention_prompt(tmp_path):
         {
             "category": "approval_prompt",
             "severity": "action_required",
+            "source": "live_pane",
+            "dedupe_key": "approval_prompt:abc123",
             "observed": {
                 "prompt": "Do you want to proceed?",
                 "suggested_inputs": ["y", "n"],
@@ -47,6 +49,8 @@ def test_run_control_snapshot_projects_attention_prompt(tmp_path):
             "reason": "approval_prompt",
             "prompt": "Do you want to proceed?",
             "suggested_inputs": ["y", "n"],
+            "source": "live_pane",
+            "dedupe_key": "approval_prompt:abc123",
         },
         "can_send_text": True,
         "latest_event_id": event["run_seq"],
@@ -271,6 +275,35 @@ def test_run_control_snapshot_does_not_reopen_prompt_after_input_delivery(tmp_pa
     session_events.append_event(
         run_dir,
         "mcp_input_delivered",
+        {"observed": {"activity_state": "working"}},
+    )
+
+    snapshot = RunControlSnapshot.from_run(run_id, state_root=state_root)
+
+    assert snapshot["activity_state"] == "working"
+    assert snapshot["attention"]["required"] is False
+
+
+def test_run_control_snapshot_keeps_prompt_resolved_after_later_output_event(tmp_path):
+    state_root = tmp_path / "state"
+    run_id = "run-output-after-input"
+    run_dir = core.run_dir(run_id, state_root=state_root)
+    core.atomic_write_json(
+        core.state_path(run_id, state_root=state_root),
+        {"run_id": run_id, "status": "running"},
+    )
+    (run_dir / "terminal.log").write_text(
+        "Do you want to proceed?",
+        encoding="utf-8",
+    )
+    session_events.append_event(
+        run_dir,
+        "mcp_input_delivered",
+        {"observed": {"activity_state": "working"}},
+    )
+    session_events.append_event(
+        run_dir,
+        "terminal_output_observed",
         {"observed": {"activity_state": "working"}},
     )
 

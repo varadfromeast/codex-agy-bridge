@@ -13,6 +13,7 @@ from codex_agy_bridge.state import RunState
 INCOMPLETE_RESPONSE_PHRASES = (
     "i am waiting",
     "i'm waiting",
+    "waiting for task",
     "waiting for the background",
     "waiting for tests",
     "still running",
@@ -68,6 +69,11 @@ class CompletionMonitor:
                 if not terminal_response_is_meaningful(response, marker):
                     marker_at = text.find(marker, marker_end)
                     continue
+                cleaned = core.clean_response(response, marker)
+                if cleaned and looks_like_incomplete_response(cleaned):
+                    response_start = marker_end
+                    marker_at = text.find(marker, marker_end)
+                    continue
                 return response
         return None
 
@@ -81,6 +87,11 @@ class CompletionMonitor:
         """Return whether response and artifact evidence permit completion."""
         marker = str(self.state["completion_marker"])
         if marker and response and marker in response:
+            cleaned = core.clean_response(response, marker)
+            if cleaned and looks_like_incomplete_response(cleaned):
+                self.marker_response = None
+                self.marker_seen_at = None
+                return False
             if self.expected_file_error() is not None:
                 return False
             if response != self.marker_response:
