@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO, TypeAlias
 
+from codex_agy_bridge import transcript as transcript_domain
 from codex_agy_bridge.exceptions import RunNotFoundError
 from codex_agy_bridge.state import (
     ACTIVE_STATUSES,
@@ -271,8 +272,7 @@ def active_runs(state_root: Path | None = None) -> list[RunState]:
 
 
 def latest_step(conversation_id: str) -> dict[str, Any] | None:
-    steps = compact_steps(conversation_id, limit=1)
-    return steps[-1] if steps else None
+    return _conversation_transcript(conversation_id).latest_step()
 
 
 def _read_tail(path: Path, max_bytes: int) -> str:
@@ -384,17 +384,10 @@ def _classify_provider_health_text(
 
 
 def conversation_for_workspace(workspace: str) -> str | None:
-    if not LAST_CONVERSATIONS.exists():
-        return None
-    try:
-        mapping = json.loads(LAST_CONVERSATIONS.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    normalized = str(Path(workspace).resolve())
-    for path, conversation_id in mapping.items():
-        if str(Path(path).resolve()) == normalized:
-            return str(conversation_id)
-    return None
+    return transcript_domain.conversation_for_workspace(
+        workspace,
+        mapping_path=LAST_CONVERSATIONS,
+    )
 
 
 def conversation_for_prompt_after(
@@ -403,85 +396,40 @@ def conversation_for_prompt_after(
     started_after: float,
 ) -> str | None:
     """Find a newly created conversation containing the exact user prompt."""
-    if not BRAIN_DIR.exists():
-        return None
-    candidates: list[tuple[float, str]] = []
-    for directory in BRAIN_DIR.iterdir():
-        if not directory.is_dir():
-            continue
-        try:
-            modified_at = directory.stat().st_mtime
-        except OSError:
-            continue
-        if modified_at >= started_after - 2:
-            candidates.append((modified_at, directory.name))
-
-    for _modified_at, conversation_id in sorted(candidates, reverse=True):
-        for step in read_steps(conversation_id):
-            if (
-                step.get("source") == "USER_EXPLICIT"
-                and step.get("type") == "USER_INPUT"
-                and _user_content_matches_prompt(str(step.get("content", "")), prompt)
-            ):
-                return conversation_id
-    return None
+    return transcript_domain.conversation_for_prompt_after(
+        prompt,
+        started_after=started_after,
+        brain_dir=BRAIN_DIR,
+    )
 
 
 def _user_content_matches_prompt(content: str, prompt: str) -> bool:
-    if content == prompt:
-        return True
-    match = re.match(
-        r"\s*<USER_REQUEST>\n?(?P<prompt>.*?)\n?</USER_REQUEST>(?:\s|$)",
-        content,
-        re.S,
-    )
-    return bool(match and match.group("prompt") == prompt)
+    """Compatibility facade for the Antigravity wrapped-prompt matcher."""
+    return transcript_domain._user_content_matches_prompt(content, prompt)
 
 
 def transcript_path(conversation_id: str) -> Path:
-    return (
-        BRAIN_DIR
-        / validate_identifier(conversation_id, "conversation_id")
-        / ".system_generated"
-        / "logs"
-        / "transcript.jsonl"
+    return transcript_domain.transcript_path(conversation_id, brain_dir=BRAIN_DIR)
+
+
+def _conversation_transcript(
+    conversation_id: str,
+) -> transcript_domain.ConversationTranscript:
+    # Route through this module's public path function so existing callers can
+    # redirect reads by monkeypatching core.transcript_path.
+    return transcript_domain.ConversationTranscript(
+        conversation_id,
+        transcript_path(conversation_id),
     )
 
 
 def read_steps(conversation_id: str) -> list[dict[str, Any]]:
     """Read the complete transcript without retaining process-local state."""
-    try:
-        lines = transcript_path(conversation_id).read_text(
-            encoding="utf-8",
-            errors="replace",
-        ).splitlines()
-    except OSError:
-        return []
-    steps: list[dict[str, Any]] = []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            steps.append(value)
-    return steps
+    return _conversation_transcript(conversation_id).read_steps()
 
 
 def final_response(conversation_id: str) -> str | None:
-    response = None
-    for step in read_steps(conversation_id):
-        if (
-            step.get("source") == "MODEL"
-            and step.get("type") == "PLANNER_RESPONSE"
-            and step.get("status") == "DONE"
-            and isinstance(step.get("content"), str)
-            and step["content"].strip()
-        ):
-            response = step["content"]
-    return response
+    return _conversation_transcript(conversation_id).final_response()
 
 
 def clean_response(response: str | None, completion_marker: str | None) -> str | None:
@@ -505,8 +453,7 @@ def compact_steps(
     max_content_chars: int = 500,
 ) -> list[dict[str, Any]]:
     """Return bounded progress events, with raw trajectory content opt-in."""
-    return compact_step_records(
-        read_steps(conversation_id),
+    return _conversation_transcript(conversation_id).compact_steps(
         after_step=after_step,
         limit=limit,
         include_content=include_content,
@@ -523,30 +470,12 @@ def compact_step_page(
     max_content_chars: int = 500,
 ) -> dict[str, Any]:
     """Return the oldest unread bounded page without skipping later steps."""
-    page_size = max(1, min(limit, 200))
-    unread = [
-        step
-        for step in read_steps(conversation_id)
-        if isinstance(step.get("step_index"), int)
-        and int(step["step_index"]) > after_step
-    ]
-    page_records = unread[: page_size + 1]
-    has_more = len(page_records) > page_size
-    steps = compact_step_records(
-        page_records[:page_size],
+    return _conversation_transcript(conversation_id).compact_step_page(
         after_step=after_step,
-        limit=page_size,
+        limit=limit,
         include_content=include_content,
         max_content_chars=max_content_chars,
     )
-    next_after = after_step
-    if steps and isinstance(steps[-1].get("step_index"), int):
-        next_after = int(steps[-1]["step_index"])
-    return {
-        "steps": steps,
-        "next_after": next_after,
-        "has_more": has_more,
-    }
 
 
 def compact_step_records(
@@ -558,32 +487,10 @@ def compact_step_records(
     max_content_chars: int = 500,
 ) -> list[dict[str, Any]]:
     """Compact already-parsed records without rereading their transcript."""
-    selected: list[dict[str, Any]] = []
-    content_limit = max(1, min(max_content_chars, 8000))
-    for step in steps:
-        index = step.get("step_index")
-        if not isinstance(index, int) or index <= after_step:
-            continue
-        compact = {
-            key: step.get(key)
-            for key in ("step_index", "source", "type", "status", "created_at")
-        }
-        content = step.get("content")
-        if content:
-            normalized = " ".join(str(content).split())
-            if include_content:
-                compact["content"] = normalized[:content_limit]
-            elif step.get("type") == "ERROR_MESSAGE":
-                compact["error_summary"] = normalized[:content_limit]
-        tool_calls = step.get("tool_calls")
-        if isinstance(tool_calls, list):
-            if include_content:
-                compact["tool_calls"] = tool_calls
-            else:
-                compact["tools"] = [
-                    call.get("name")
-                    for call in tool_calls
-                    if isinstance(call, dict) and call.get("name")
-                ]
-        selected.append(compact)
-    return selected[-max(1, min(limit, 200)) :]
+    return transcript_domain.compact_step_records(
+        steps,
+        after_step=after_step,
+        limit=limit,
+        include_content=include_content,
+        max_content_chars=max_content_chars,
+    )

@@ -9,6 +9,16 @@ import pytest
 from codex_agy_bridge import terminal
 
 
+def test_strip_control_sequences_removes_extended_terminal_commands():
+    unsafe = (
+        "before\x1b]0;multi\nline title\x1b\\"
+        "middle\x1b_Gpayload\x1b\\"
+        "after\x9b2J\x07"
+    )
+
+    assert terminal.strip_control_sequences(unsafe) == "beforemiddleafter"
+
+
 def test_clean_text_applies_carriage_return_redraws():
     assert (
         terminal.clean_text("Gener\rGenerating\rGenerating.\nDone\n")

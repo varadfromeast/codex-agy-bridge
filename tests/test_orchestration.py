@@ -776,19 +776,27 @@ def test_wait_caps_requested_timeout_to_mcp_safe_slice(monkeypatch, tmp_path):
     observed = {}
     orch = RunnerOrchestrator(state_root=state_root, store=mem_store)
 
-    def wait_for_runs(_run_dirs, **kwargs):
+    def wait(run_ids, **kwargs):
+        observed["run_ids"] = run_ids
         observed.update(kwargs)
-        return {"matched": False, "events": [], "runs": {}}
+        return {
+            "matched": False,
+            "events": [],
+            "runs": {},
+            "wait": {
+                "requested_timeout_seconds": kwargs["timeout_seconds"],
+                "effective_timeout_seconds": kwargs["max_slice_seconds"],
+            },
+        }
 
-    monkeypatch.setattr(
-        "codex_agy_bridge._orchestrator.waiter.wait_for_runs",
-        wait_for_runs,
-    )
+    monkeypatch.setattr(orch._run_observation, "wait", wait)
 
     result = orch.wait(["run-1"], timeout_seconds=86_400)
 
     assert result["matched"] is False
-    assert observed["timeout_seconds"] == 120
+    assert observed["run_ids"] == ["run-1"]
+    assert observed["timeout_seconds"] == 86_400
+    assert observed["max_slice_seconds"] == 120
     assert result["wait"]["requested_timeout_seconds"] == 86_400
     assert result["wait"]["effective_timeout_seconds"] == 120
 

@@ -13,24 +13,33 @@ from pathlib import Path
 
 DEFAULT_TMUX_TIMEOUT_SECONDS = 2.0
 DEFAULT_CHILD_START_TIMEOUT_SECONDS = 2.0
-ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-OSC_ESCAPE_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
-CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+CONTROL_STRING_RE = re.compile(
+    r"(?:\x1b[P^_X]|[\x90\x98\x9e\x9f]).*?(?:\x1b\\|\x9c)",
+    re.DOTALL,
+)
+OSC_ESCAPE_RE = re.compile(
+    r"(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c)",
+    re.DOTALL,
+)
+CSI_ESCAPE_RE = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
+ESCAPE_RE = re.compile(r"\x1b[ -/]*[0-~]")
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 SPINNER_STATUS_RE = re.compile(r"^\s*[\u2800-\u28ff](?:\s+[^\n]{0,120})?\s*$")
 
 
-def clean_text(text: str) -> str:
-    """Return terminal text without ANSI/control sequences.
-
-    Terminal logs can contain carriage-return driven redraws from spinners and
-    progress UIs. Treat bare ``\r`` like a terminal would: redraw the current
-    line instead of expanding every frame into a new log line.
-    """
+def strip_control_sequences(text: str) -> str:
+    """Remove terminal control sequences while preserving ordinary layout."""
+    text = CONTROL_STRING_RE.sub("", text)
     text = OSC_ESCAPE_RE.sub("", text)
-    text = ANSI_ESCAPE_RE.sub("", text)
+    text = CSI_ESCAPE_RE.sub("", text)
+    text = ESCAPE_RE.sub("", text)
     text = _apply_terminal_line_controls(text)
-    text = CONTROL_RE.sub("", text)
-    return _compact_terminal_noise(text)
+    return CONTROL_RE.sub("", text)
+
+
+def clean_text(text: str) -> str:
+    """Return normalized terminal text without terminal UI noise."""
+    return _compact_terminal_noise(strip_control_sequences(text))
 
 
 def _compact_terminal_noise(text: str) -> str:

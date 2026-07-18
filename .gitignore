@@ -6,4 +6,5 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-
+.codex-review-batch/
+.pi-subagents/

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
+from functools import wraps
 from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
 
-from codex_agy_bridge import diagnostics, orchestration, waiter
+from codex_agy_bridge import diagnostics, orchestration, terminal, waiter
 from codex_agy_bridge.core import STATE_ROOT, public_state
 from codex_agy_bridge.exceptions import AuthenticationRequiredError
 from codex_agy_bridge.lifecycle import register_server_instance
@@ -16,11 +18,39 @@ DEFAULT_MODEL = orchestration.DEFAULT_MODEL
 DEFAULT_WAIT_TIMEOUT_SECONDS = orchestration.DEFAULT_WAIT_TIMEOUT_SECONDS
 
 
+def sanitize_mcp_output(value: Any) -> Any:
+    """Recursively remove terminal controls from untrusted MCP text values."""
+    if isinstance(value, str):
+        return terminal.strip_control_sequences(value)
+    if isinstance(value, dict):
+        return {
+            sanitize_mcp_output(key): sanitize_mcp_output(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_mcp_output(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_mcp_output(item) for item in value)
+    return value
+
+
 class StrictFastMCP(FastMCP):
-    """FastMCP server whose generated tool argument models reject extra fields."""
+    """FastMCP server with strict arguments and terminal-safe tool results."""
 
     def add_tool(self, fn, *args, **kwargs) -> None:
-        super().add_tool(fn, *args, **kwargs)
+        if inspect.iscoroutinefunction(fn):
+
+            @wraps(fn)
+            async def safe_fn(*fn_args, **fn_kwargs):
+                return sanitize_mcp_output(await fn(*fn_args, **fn_kwargs))
+
+        else:
+
+            @wraps(fn)
+            def safe_fn(*fn_args, **fn_kwargs):
+                return sanitize_mcp_output(fn(*fn_args, **fn_kwargs))
+
+        super().add_tool(safe_fn, *args, **kwargs)
         name = kwargs.get("name") or fn.__name__
         tool = self._tool_manager.get_tool(name)
         if tool is None:

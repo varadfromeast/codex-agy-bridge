@@ -2,8 +2,32 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
 from codex_agy_bridge import server
 from codex_agy_bridge.exceptions import AuthenticationRequiredError
+
+
+@pytest.mark.anyio
+async def test_mcp_tool_results_strip_terminal_control_sequences():
+    bridge = server.StrictFastMCP("safe-output-test")
+
+    def unsafe_output() -> dict[str, object]:
+        return {
+            "result": "before\x1b[2Jafter",
+            "nested": ["red\x1b[31m text\x1b[0m", "bell\x07"],
+        }
+
+    bridge.add_tool(unsafe_output)
+    tool = bridge._tool_manager.get_tool("unsafe_output")
+    assert tool is not None
+
+    result = await tool.run({})
+
+    assert result == {
+        "result": "beforeafter",
+        "nested": ["red text", "bell"],
+    }
 
 
 def test_create_run_requires_tmux_without_execution_mode_flag():
