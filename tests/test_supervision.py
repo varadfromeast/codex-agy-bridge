@@ -1266,7 +1266,7 @@ def test_supervisor_launch_auto_opens_foreground_attachable_terminal(
 
     RunSupervisor("run-1")._launch()
 
-    assert attached == [("agy-run-1", False)]
+    assert attached == [("agy-run-1", True)]
 
 
 def test_supervisor_launch_does_not_open_headless_terminal(monkeypatch, tmp_path):
@@ -1298,7 +1298,7 @@ def test_supervisor_launch_does_not_open_headless_terminal(monkeypatch, tmp_path
     assert attached == []
 
 
-def test_supervisor_launch_survives_terminal_auto_open_failure(
+def test_supervisor_launch_rejects_invisible_terminal_failure(
     monkeypatch, tmp_path
 ):
     state = {
@@ -1323,6 +1323,8 @@ def test_supervisor_launch_survives_terminal_auto_open_failure(
         "update_state",
         lambda _run_id, **changes: updates.append(changes),
     )
+    stopped = []
+    monkeypatch.setattr(runner, "stop_run", lambda session: stopped.append(session))
     monkeypatch.setattr(
         "codex_agy_bridge.terminal.attach",
         lambda _session, *, check=False: (_ for _ in ()).throw(
@@ -1330,12 +1332,10 @@ def test_supervisor_launch_survives_terminal_auto_open_failure(
         ),
     )
 
-    RunSupervisor("run-1")._launch()
-
-    assert updates[-1]["status"] == "running"
-    assert "Terminal auto-open failed: osascript failed" in (
-        tmp_path / "terminal-progress.log"
-    ).read_text()
+    assert RunSupervisor("run-1").execute() == 1
+    assert stopped == ["agy-run-1"]
+    assert updates[-1]["status"] == "failed"
+    assert "osascript failed" in updates[-1]["error"]
 
 
 def test_supervisor_backs_off_conversation_discovery(monkeypatch, tmp_path):

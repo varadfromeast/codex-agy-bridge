@@ -188,14 +188,10 @@ class RunSupervisor:
             or not self.session
         ):
             return
-        try:
-            terminal.attach(self.session, check=False)
-        except Exception as error:
-            with (
-                suppress(OSError),
-                core.open_private_text_append(self.progress_path) as handle,
-            ):
-                handle.write(f"Terminal auto-open failed: {error}\n")
+        # A foreground Run is only valid when its human terminal can be opened.
+        # Do not silently continue with a detached session: execute() will stop it
+        # and persist a failed Run if macOS Terminal cannot attach.
+        terminal.attach(self.session, check=True)
 
     def _monitor_until_exit(self) -> int | None:
         deadline = time.monotonic() + self._hard_timeout_seconds()
