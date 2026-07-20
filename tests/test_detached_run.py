@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 import stat
 import time
 
-from codex_agy_bridge import core, orchestration, server, terminal
+from codex_agy_bridge import core, orchestration, server
 
 
 def test_detached_runner_recovers_conversation_and_result(tmp_path, monkeypatch):
@@ -61,7 +62,12 @@ transcript.write_text(
     )
     fake_agy.chmod(fake_agy.stat().st_mode | stat.S_IXUSR)
 
+    fake_osascript = tmp_path / "osascript"
+    fake_osascript.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_osascript.chmod(fake_osascript.stat().st_mode | stat.S_IXUSR)
+
     monkeypatch.setenv("AGY_CMD", str(fake_agy))
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("AGY_BRIDGE_STATE_DIR", str(state_root))
     monkeypatch.setenv("AGY_BRIDGE_AGY_ROOT", str(agy_root))
     monkeypatch.setattr(core, "STATE_ROOT", state_root)
@@ -74,7 +80,6 @@ transcript.write_text(
     monkeypatch.setattr(core, "BRAIN_DIR", agy_root / "brain")
     monkeypatch.setattr(server, "STATE_ROOT", state_root)
     monkeypatch.setattr(orchestration, "STATE_ROOT", state_root)
-    monkeypatch.setattr(terminal, "attach", lambda _session, *, check=False: None)
 
     state = server.create_run(
         prompt="return a fake result",
