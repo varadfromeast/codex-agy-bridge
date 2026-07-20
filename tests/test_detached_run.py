@@ -3,7 +3,7 @@ from __future__ import annotations
 import stat
 import time
 
-from codex_agy_bridge import core, orchestration, server
+from codex_agy_bridge import core, orchestration, server, terminal
 
 
 def test_detached_runner_recovers_conversation_and_result(tmp_path, monkeypatch):
@@ -74,6 +74,7 @@ transcript.write_text(
     monkeypatch.setattr(core, "BRAIN_DIR", agy_root / "brain")
     monkeypatch.setattr(server, "STATE_ROOT", state_root)
     monkeypatch.setattr(orchestration, "STATE_ROOT", state_root)
+    monkeypatch.setattr(terminal, "attach", lambda _session, *, check=False: None)
 
     state = server.create_run(
         prompt="return a fake result",
