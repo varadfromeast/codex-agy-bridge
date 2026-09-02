@@ -7,12 +7,20 @@ import re
 import shlex
 import signal
 import subprocess
+import tempfile
 import time
 from contextlib import suppress
 from pathlib import Path
 
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
+
 DEFAULT_TMUX_TIMEOUT_SECONDS = 2.0
 DEFAULT_CHILD_START_TIMEOUT_SECONDS = 2.0
+DEFAULT_TERMINAL_ATTACH_LOCK_TIMEOUT_SECONDS = 120.0
+TERMINAL_ATTACH_LOCK = (
+    Path(tempfile.gettempdir()) / f"codex-agy-bridge-{os.getuid()}-terminal-attach.lock"
+)
 CONTROL_STRING_RE = re.compile(
     r"(?:\x1b[P^_X]|[\x90\x98\x9e\x9f]).*?(?:\x1b\\|\x9c)",
     re.DOTALL,
@@ -297,13 +305,20 @@ def attach(session: str, *, check: bool = False) -> None:
         'tell application "Terminal" to activate',
     ]
     try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
-        )
+        with FileLock(
+            str(TERMINAL_ATTACH_LOCK),
+            timeout=DEFAULT_TERMINAL_ATTACH_LOCK_TIMEOUT_SECONDS,
+            mode=0o600,
+        ):
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=DEFAULT_TMUX_TIMEOUT_SECONDS,
+            )
+    except FileLockTimeout as error:
+        raise TmuxCommandError(command=command, reason="attach lock timeout") from error
     except subprocess.TimeoutExpired as error:
         raise TmuxCommandError(command=command, reason="timeout") from error
     except EOFError as error:

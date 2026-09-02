@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import multiprocessing
 import shlex
 import signal
 import subprocess
+import threading
+import time
 
 import pytest
 
 from codex_agy_bridge import terminal
+
+
+@pytest.fixture(autouse=True)
+def isolate_terminal_attach_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        terminal,
+        "TERMINAL_ATTACH_LOCK",
+        tmp_path / "terminal-attach.lock",
+    )
 
 
 def test_strip_control_sequences_removes_extended_terminal_commands():
@@ -305,6 +317,90 @@ def test_terminal_attach_timeout_is_structured(monkeypatch):
         terminal.attach("agy-target", check=True)
 
     assert error.value.reason == "timeout"
+    assert error.value.command[0] == "osascript"
+
+
+def test_terminal_attach_serializes_concurrent_osascript_calls(monkeypatch):
+    first_entered = threading.Event()
+    calls_lock = threading.Lock()
+    active_calls = 0
+    max_active_calls = 0
+
+    def run(command, **_kwargs):
+        nonlocal active_calls, max_active_calls
+        with calls_lock:
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            call_number = active_calls
+        if call_number == 1:
+            first_entered.set()
+            time.sleep(0.2)
+        with calls_lock:
+            active_calls -= 1
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(terminal.subprocess, "run", run)
+
+    first = threading.Thread(target=terminal.attach, args=("agy-first",))
+    second = threading.Thread(target=terminal.attach, args=("agy-second",))
+    first.start()
+    assert first_entered.wait(timeout=1)
+    second.start()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert max_active_calls == 1
+
+
+def test_terminal_attach_serializes_osascript_across_processes(monkeypatch):
+    context = multiprocessing.get_context("fork")
+    active_calls = context.Value("i", 0)
+    max_active_calls = context.Value("i", 0)
+
+    def run(command, **_kwargs):
+        with active_calls.get_lock():
+            active_calls.value += 1
+            max_active_calls.value = max(max_active_calls.value, active_calls.value)
+        time.sleep(0.2)
+        with active_calls.get_lock():
+            active_calls.value -= 1
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(terminal.subprocess, "run", run)
+
+    first = context.Process(target=terminal.attach, args=("agy-first",))
+    second = context.Process(target=terminal.attach, args=("agy-second",))
+    first.start()
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    assert max_active_calls.value == 1
+
+
+def test_terminal_attach_lock_timeout_is_structured(monkeypatch):
+    monkeypatch.setattr(
+        terminal,
+        "DEFAULT_TERMINAL_ATTACH_LOCK_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("osascript must not run without lock"),
+    )
+
+    with (
+        terminal.FileLock(str(terminal.TERMINAL_ATTACH_LOCK)),
+        pytest.raises(terminal.TmuxCommandError) as error,
+    ):
+        terminal.attach("agy-target", check=True)
+
+    assert error.value.reason == "attach lock timeout"
     assert error.value.command[0] == "osascript"
 
 
