@@ -318,6 +318,35 @@ def test_terminal_attach_opens_gnome_terminal_on_linux(monkeypatch):
     ]
 
 
+def test_terminal_attach_opens_x_terminal_emulator_on_linux(monkeypatch):
+    calls = []
+    monkeypatch.setattr(terminal.sys, "platform", "linux")
+    monkeypatch.setattr(
+        terminal.shutil,
+        "which",
+        lambda name: (
+            "/usr/bin/x-terminal-emulator" if name == "x-terminal-emulator" else None
+        ),
+    )
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+
+    terminal.attach("agy target", check=True)
+
+    assert calls[0][0] == [
+        "/usr/bin/x-terminal-emulator",
+        "-e",
+        "tmux",
+        "attach-session",
+        "-t",
+        "agy target",
+    ]
+
+
 def test_terminal_attach_escapes_session_for_shell_and_applescript(monkeypatch):
     calls = []
     monkeypatch.setattr(terminal.sys, "platform", "darwin")

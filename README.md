@@ -21,10 +21,14 @@ Prerequisites:
 - Codex CLI for the command below, or another local stdio MCP-capable harness
 - The official Antigravity CLI (`agy`), already authenticated locally
 - `uv` / `uvx`
-- `tmux` on macOS:
+- `tmux` and a supported terminal launcher:
 
 ```bash
+# macOS
 brew install tmux
+
+# Debian/Ubuntu Linux (x-terminal-emulator is also supported)
+sudo apt install tmux gnome-terminal
 ```
 
 Check the required commands:
@@ -262,8 +266,9 @@ Run state survives MCP server restarts under
 
 ## Status And Risk
 
-This project is experimental. It currently targets Python 3.11+, macOS,
-`tmux`, and Antigravity CLI 1.0.8-compatible commands and trajectory files.
+This project is experimental. It currently targets Python 3.11+, macOS or
+Linux with a supported terminal launcher, `tmux`, and Antigravity CLI
+1.0.8-compatible commands and trajectory files.
 
 Antigravity is an agentic CLI. It can read and write files, execute commands,
 and access the network with the current user's privileges. This bridge is not a

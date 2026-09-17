@@ -364,7 +364,7 @@ def _terminal_attach_command(session: str) -> list[str]:
             )
         if Path(launcher).name == "gnome-terminal":
             return [launcher, "--", "tmux", "attach-session", "-t", session]
-        return [launcher, "-e", "tmux attach-session -t " + shlex.quote(session)]
+        return [launcher, "-e", "tmux", "attach-session", "-t", session]
 
     raise TmuxCommandError(
         command=["tmux", "attach-session", "-t", session],
