@@ -21,10 +21,14 @@ Prerequisites:
 - Codex CLI for the command below, or another local stdio MCP-capable harness
 - The official Antigravity CLI (`agy`), already authenticated locally
 - `uv` / `uvx`
-- `tmux` on macOS:
+- `tmux` and a supported terminal launcher:
 
 ```bash
+# macOS
 brew install tmux
+
+# Debian/Ubuntu Linux (x-terminal-emulator is also supported)
+sudo apt install tmux gnome-terminal
 ```
 
 Check the required commands:
@@ -211,6 +215,24 @@ vision, see [docs/MCP_VISION.md](docs/MCP_VISION.md).
 | `agy_goal` | Create goals, start targets, and read aggregate status |
 | `agy_admin` | Read diagnostics, models, plugins, validation, and changelog |
 
+Omit `model` (or pass `null`) to let Agy choose its default: the bridge stores
+`model: null` and does not send `--model`. This applies to runs, review tools,
+and goals, whose targets inherit their goal's selection. Explicit selections
+are validated against `agy models`, including the bridge's former
+`Gemini 3.5 Flash (Medium)` default; unknown and empty selections are rejected.
+The bridge never substitutes the first catalog entry. `agy_admin(action="models")`
+reports `default_model: null` and `default_model_source: "agy_cli"`; this describes
+delegation, not an observed effective provider model.
+
+Existing persisted runs and goals retain their model strings and remain readable.
+They are not silently migrated to a different model. New launches from an old
+goal revalidate its selection and reject it if it is no longer available; create
+a new goal with an available model or omit the selection to delegate to Agy.
+Previously reserved runs retain their original command policy. New delegated
+requests have distinct deduplication keys from explicitly selected models.
+Older bridge versions that require a string goal model cannot read new null-model
+goals; avoid downgrading with those goals in use.
+
 Typical flow:
 
 ```text
@@ -244,8 +266,9 @@ Run state survives MCP server restarts under
 
 ## Status And Risk
 
-This project is experimental. It currently targets Python 3.11+, macOS,
-`tmux`, and Antigravity CLI 1.0.8-compatible commands and trajectory files.
+This project is experimental. It currently targets Python 3.11+, macOS or
+Linux with a supported terminal launcher, `tmux`, and Antigravity CLI
+1.0.8-compatible commands and trajectory files.
 
 Antigravity is an agentic CLI. It can read and write files, execute commands,
 and access the network with the current user's privileges. This bridge is not a

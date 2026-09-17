@@ -83,7 +83,9 @@ class AntigravityCli:
                 or self._models is None
                 or now - self._models_observed_at >= self.model_cache_seconds
             ):
-                self._models = self._nonempty_lines(self._run("models"))
+                self._models = self._nonempty_lines(
+                    self._run("models", stdout_only=True)
+                )
                 self._models_observed_at = now
             return list(self._models)
 
@@ -165,7 +167,12 @@ class AntigravityCli:
         }
 
     def validate_model(self, model: str) -> None:
-        if model not in self.models():
+        available_models = self.models()
+        model_ids = {
+            available_model.split("\t", 1)[0]
+            for available_model in available_models
+        }
+        if model not in available_models and model not in model_ids:
             raise ValueError(f"unknown Antigravity model: {model}")
 
     def build_run_command(
@@ -226,6 +233,7 @@ class AntigravityCli:
     def _run(
         self,
         *args: str,
+        stdout_only: bool = False,
     ) -> str:
         completed, output = self._execute(*args)
         if completed.returncode != 0:
@@ -233,6 +241,9 @@ class AntigravityCli:
                 f"agy {' '.join(args)} failed with exit code "
                 f"{completed.returncode}: {output.strip()}"
             )
+        if stdout_only:
+            # Successful catalog data is on stdout; stderr carries diagnostics.
+            return (completed.stdout or "")[: self.max_output_chars]
         return output
 
     def _execute(

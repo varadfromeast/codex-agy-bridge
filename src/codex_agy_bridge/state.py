@@ -49,7 +49,7 @@ class RunState(TypedDict, total=False):
     agent_mode: AgentMode
     execution_surface: ExecutionSurface
     human_attachable: bool
-    model: str
+    model: str | None
     goal_id: str | None
     target_name: str | None
     request_key: str
@@ -76,7 +76,7 @@ class GoalState(TypedDict):
     goal_id: str
     objective: str
     workspace: str
-    model: str
+    model: str | None
     max_parallel: int
     targets: dict[str, str]
     created_at: str
@@ -103,12 +103,15 @@ def validate_goal_state(value: object) -> GoalState:
         "goal_id",
         "objective",
         "workspace",
-        "model",
         "created_at",
         "updated_at",
     )
     for key in required_strings:
         _required_string(state, key)
+    # Require an explicit persisted policy: null delegates to Agy; older
+    # non-empty strings keep their original selection without migration.
+    if "model" not in state or state["model"] is not None:
+        _required_string(state, "model")
     max_parallel = state.get("max_parallel")
     if not isinstance(max_parallel, int) or isinstance(max_parallel, bool):
         raise ValueError("goal state max_parallel must be an integer")

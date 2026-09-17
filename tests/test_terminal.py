@@ -271,6 +271,7 @@ def test_terminal_launch_foreground_runs_visible_cli_without_tail_wrapper(
 
 def test_terminal_attach_opens_terminal_app(monkeypatch):
     calls = []
+    monkeypatch.setattr(terminal.sys, "platform", "darwin")
     monkeypatch.setattr(
         terminal.subprocess,
         "run",
@@ -290,8 +291,65 @@ def test_terminal_attach_opens_terminal_app(monkeypatch):
     }
 
 
+def test_terminal_attach_opens_gnome_terminal_on_linux(monkeypatch):
+    calls = []
+    monkeypatch.setattr(terminal.sys, "platform", "linux")
+    monkeypatch.setattr(
+        terminal.shutil,
+        "which",
+        lambda name: "/usr/bin/gnome-terminal" if name == "gnome-terminal" else None,
+    )
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+
+    terminal.attach("agy-target", check=True)
+
+    assert calls[0][0] == [
+        "/usr/bin/gnome-terminal",
+        "--",
+        "tmux",
+        "attach-session",
+        "-t",
+        "agy-target",
+    ]
+
+
+def test_terminal_attach_opens_x_terminal_emulator_on_linux(monkeypatch):
+    calls = []
+    monkeypatch.setattr(terminal.sys, "platform", "linux")
+    monkeypatch.setattr(
+        terminal.shutil,
+        "which",
+        lambda name: (
+            "/usr/bin/x-terminal-emulator" if name == "x-terminal-emulator" else None
+        ),
+    )
+    monkeypatch.setattr(
+        terminal.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+
+    terminal.attach("agy target", check=True)
+
+    assert calls[0][0] == [
+        "/usr/bin/x-terminal-emulator",
+        "-e",
+        "tmux",
+        "attach-session",
+        "-t",
+        "agy target",
+    ]
+
+
 def test_terminal_attach_escapes_session_for_shell_and_applescript(monkeypatch):
     calls = []
+    monkeypatch.setattr(terminal.sys, "platform", "darwin")
     monkeypatch.setattr(
         terminal.subprocess,
         "run",
@@ -308,6 +366,8 @@ def test_terminal_attach_escapes_session_for_shell_and_applescript(monkeypatch):
 
 
 def test_terminal_attach_timeout_is_structured(monkeypatch):
+    monkeypatch.setattr(terminal.sys, "platform", "darwin")
+
     def run(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
@@ -383,6 +443,8 @@ def test_terminal_attach_serializes_osascript_across_processes(monkeypatch):
 
 
 def test_terminal_attach_lock_timeout_is_structured(monkeypatch):
+    monkeypatch.setattr(terminal.sys, "platform", "darwin")
+
     monkeypatch.setattr(
         terminal,
         "DEFAULT_TERMINAL_ATTACH_LOCK_TIMEOUT_SECONDS",

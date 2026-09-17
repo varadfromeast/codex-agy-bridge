@@ -1,12 +1,14 @@
-"""Persistent tmux execution and Terminal.app presentation."""
+"""Persistent tmux execution and platform terminal presentation."""
 
 from __future__ import annotations
 
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import suppress
@@ -295,15 +297,7 @@ def release_child(path: Path) -> None:
 
 
 def attach(session: str, *, check: bool = False) -> None:
-    script = f"tmux attach-session -t {shlex.quote(session)}"
-    applescript_command = script.replace("\\", "\\\\").replace('"', '\\"')
-    command = [
-        "osascript",
-        "-e",
-        f'tell application "Terminal" to do script "{applescript_command}"',
-        "-e",
-        'tell application "Terminal" to activate',
-    ]
+    command = _terminal_attach_command(session)
     try:
         with FileLock(
             str(TERMINAL_ATTACH_LOCK),
@@ -323,6 +317,12 @@ def attach(session: str, *, check: bool = False) -> None:
         raise TmuxCommandError(command=command, reason="timeout") from error
     except EOFError as error:
         raise TmuxCommandError(command=command, reason="eof") from error
+    except OSError as error:
+        raise TmuxCommandError(
+            command=command,
+            reason="terminal launcher unavailable",
+            stderr=str(error),
+        ) from error
     if check and completed.returncode != 0:
         raise TmuxCommandError(
             command=command,
@@ -330,6 +330,47 @@ def attach(session: str, *, check: bool = False) -> None:
             returncode=completed.returncode,
             stderr=completed.stderr,
         )
+
+
+def _terminal_attach_command(session: str) -> list[str]:
+    """Build the platform command that opens a terminal attached to tmux."""
+    script = f"tmux attach-session -t {shlex.quote(session)}"
+    if sys.platform == "darwin":
+        applescript_command = script.replace("\\", "\\\\").replace('"', '\\"')
+        return [
+            "osascript",
+            "-e",
+            f'tell application "Terminal" to do script "{applescript_command}"',
+            "-e",
+            'tell application "Terminal" to activate',
+        ]
+
+    if sys.platform.startswith("linux"):
+        launcher = shutil.which("gnome-terminal") or shutil.which(
+            "x-terminal-emulator"
+        )
+        if launcher is None:
+            raise TmuxCommandError(
+                command=[
+                    "gnome-terminal",
+                    "--",
+                    "tmux",
+                    "attach-session",
+                    "-t",
+                    session,
+                ],
+                reason="terminal launcher unavailable",
+                stderr="install gnome-terminal or x-terminal-emulator",
+            )
+        if Path(launcher).name == "gnome-terminal":
+            return [launcher, "--", "tmux", "attach-session", "-t", session]
+        return [launcher, "-e", "tmux", "attach-session", "-t", session]
+
+    raise TmuxCommandError(
+        command=["tmux", "attach-session", "-t", session],
+        reason="unsupported platform",
+        stderr=f"no terminal adapter for {sys.platform}",
+    )
 
 
 def alive(session: str) -> bool:

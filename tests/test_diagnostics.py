@@ -36,7 +36,8 @@ def test_models_report_includes_default_and_observation_time():
     result = diagnostics.models(cli=FakeCli(), refresh=True)
 
     assert result["cli_version"] == "1.0.8"
-    assert result["default_model"] == "Model A"
+    assert result["default_model"] is None
+    assert result["default_model_source"] == "agy_cli"
     assert result["models"] == ["Model A", "Model B"]
     assert result["observed_at"]
 

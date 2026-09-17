@@ -32,7 +32,7 @@ class RunRequest:
     timeout_seconds: int
     conversation_id: str | None
     dangerously_skip_permissions: bool
-    model: str
+    model: str | None
     sandbox: bool
     additional_directories: tuple[str, ...]
     execution_mode: ExecutionMode
@@ -55,7 +55,7 @@ class RunRequest:
         conversation_id: str | None,
         dangerously_skip_permissions: bool,
         model: str | None,
-        default_model: str,
+        default_model: str | None,
         sandbox: bool,
         additional_directories: list[str],
         execution_mode: str,
@@ -122,8 +122,10 @@ class RunRequest:
             if needs_visible_cli and not capabilities.interactive:
                 raise ValueError("installed agy does not support --prompt-interactive")
 
-        effective_model = model or default_model
-        if model is not None and effective_model != default_model:
+        effective_model = default_model if model is None else model
+        if effective_model is not None:
+            if not isinstance(effective_model, str) or not effective_model.strip():
+                raise ValueError("model must not be empty")
             cli.validate_model(effective_model)
         mode = cast(ExecutionMode, execution_mode)
         normalized_agent_mode = cast(AgentMode, agent_mode)
@@ -280,7 +282,7 @@ def _request_key(
     timeout_seconds: int,
     conversation_id: str | None,
     dangerously_skip_permissions: bool,
-    model: str,
+    model: str | None,
     sandbox: bool = False,
     additional_directories: list[str] | None = None,
     execution_mode: str = "print",
