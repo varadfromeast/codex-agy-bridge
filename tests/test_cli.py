@@ -63,6 +63,53 @@ def test_cli_accepts_model_ids_from_tab_separated_model_output(monkeypatch):
         cli.validate_model("not-a-model")
 
 
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        ("Model A\nModel B\n", ["Model A", "Model B"]),
+        (
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+            ["gemini-3.8-flash-high\tGemini 3.8 Flash (High)"],
+        ),
+        ("", []),
+    ],
+)
+def test_cli_models_excludes_stderr_diagnostics(monkeypatch, stdout, expected):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.subprocess.run",
+        lambda _command, **_kwargs: completed(
+            stdout=stdout, stderr="Fetching available models...\n"
+        ),
+    )
+    cli = AntigravityCli(executable="agy")
+
+    assert cli.models() == expected
+    assert cli.models() == expected  # Cached discovery stays uncontaminated.
+    with pytest.raises(ValueError, match="unknown Antigravity model"):
+        cli.validate_model("Fetching available models...")
+    for model in expected:
+        cli.validate_model(model)
+
+
+def test_cli_models_preserves_failure_diagnostics(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.subprocess.run",
+        lambda _command, **_kwargs: completed(
+            stdout="Partial output\n",
+            stderr='{"error": "sign_in_required"}\n',
+            returncode=2,
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        AntigravityCli(executable="agy").models()
+
+    assert str(error.value) == (
+        "agy models failed with exit code 2: "
+        'Partial output\n{"error": "sign_in_required"}'
+    )
+
+
 def test_cli_authentication_status_reports_authenticated_from_runtime_log(
     monkeypatch,
 ):
