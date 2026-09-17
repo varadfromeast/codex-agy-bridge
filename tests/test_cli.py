@@ -45,6 +45,24 @@ def test_cli_discovers_version_models_plugins_and_capabilities(monkeypatch):
     assert cli.capabilities().interactive
 
 
+def test_cli_accepts_model_ids_from_tab_separated_model_output(monkeypatch):
+    monkeypatch.setattr(
+        "codex_agy_bridge.cli.subprocess.run",
+        lambda command, **_kwargs: completed(
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+        )
+        if tuple(command) == ("agy", "models")
+        else completed(),
+    )
+    cli = AntigravityCli(executable="agy")
+
+    cli.validate_model("gemini-3.8-flash-high")
+    cli.validate_model("gemini-3.8-flash-high\tGemini 3.8 Flash (High)")
+
+    with pytest.raises(ValueError, match="unknown Antigravity model"):
+        cli.validate_model("not-a-model")
+
+
 def test_cli_authentication_status_reports_authenticated_from_runtime_log(
     monkeypatch,
 ):

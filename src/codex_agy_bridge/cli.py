@@ -165,7 +165,12 @@ class AntigravityCli:
         }
 
     def validate_model(self, model: str) -> None:
-        if model not in self.models():
+        available_models = self.models()
+        model_ids = {
+            available_model.split("\t", 1)[0]
+            for available_model in available_models
+        }
+        if model not in available_models and model not in model_ids:
             raise ValueError(f"unknown Antigravity model: {model}")
 
     def build_run_command(
