@@ -33,7 +33,8 @@ def models(
     return {
         "cli_version": adapter.version(),
         "models": available,
-        "default_model": available[0] if available else DEFAULT_MODEL,
+        "default_model": DEFAULT_MODEL,
+        "default_model_source": "agy_cli",
         "observed_at": datetime.now(UTC).isoformat(),
     }
 

@@ -24,7 +24,7 @@ class GoalTargetLaunch:
     workspace: str
     timeout_seconds: int
     dangerously_skip_permissions: bool
-    model: str
+    model: str | None
     sandbox: bool
     additional_directories: list[str]
     goal_max_parallel: int
@@ -62,7 +62,7 @@ class GoalScheduler:
         launch_run: GoalRunLauncher,
         observation: GoalObservation,
         cli: ModelValidator,
-        default_model: str,
+        default_model: str | None,
         max_parallel_limit: int,
     ) -> None:
         self.state_root = state_root
@@ -104,9 +104,9 @@ class GoalScheduler:
                 f"{self.max_parallel_limit}"
             )
         resolved_model = self.default_model if model is None else model
-        if not isinstance(resolved_model, str) or not resolved_model.strip():
-            raise ValueError("model must not be empty")
-        if resolved_model != self.default_model:
+        if resolved_model is not None:
+            if not isinstance(resolved_model, str) or not resolved_model.strip():
+                raise ValueError("model must not be empty")
             self.cli.validate_model(resolved_model)
         if dangerously_skip_permissions is not True:
             raise ValueError("dangerously_skip_permissions must be true")

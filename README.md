@@ -211,6 +211,24 @@ vision, see [docs/MCP_VISION.md](docs/MCP_VISION.md).
 | `agy_goal` | Create goals, start targets, and read aggregate status |
 | `agy_admin` | Read diagnostics, models, plugins, validation, and changelog |
 
+Omit `model` (or pass `null`) to let Agy choose its default: the bridge stores
+`model: null` and does not send `--model`. This applies to runs, review tools,
+and goals, whose targets inherit their goal's selection. Explicit selections
+are validated against `agy models`, including the bridge's former
+`Gemini 3.5 Flash (Medium)` default; unknown and empty selections are rejected.
+The bridge never substitutes the first catalog entry. `agy_admin(action="models")`
+reports `default_model: null` and `default_model_source: "agy_cli"`; this describes
+delegation, not an observed effective provider model.
+
+Existing persisted runs and goals retain their model strings and remain readable.
+They are not silently migrated to a different model. New launches from an old
+goal revalidate its selection and reject it if it is no longer available; create
+a new goal with an available model or omit the selection to delegate to Agy.
+Previously reserved runs retain their original command policy. New delegated
+requests have distinct deduplication keys from explicitly selected models.
+Older bridge versions that require a string goal model cannot read new null-model
+goals; avoid downgrading with those goals in use.
+
 Typical flow:
 
 ```text
