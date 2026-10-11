@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codex-agy-bridge"
+version = "0.1.12"
+description = "Run parallel, resumable, human-operable Antigravity CLI sessions from any MCP agent harness"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Varad" }]
+keywords = ["mcp", "codex", "antigravity", "agents", "ai"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  "filelock>=3.18,<4",
+  "mcp>=1.27,<2",
+  "pydantic>=2,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/varadfromeast/codex-agy-bridge"
+Repository = "https://github.com/varadfromeast/codex-agy-bridge"
+Issues = "https://github.com/varadfromeast/codex-agy-bridge/issues"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+codex-agy-bridge = "codex_agy_bridge.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_agy_bridge"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src/codex_agy_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "live: invokes the real Antigravity CLI through a fresh MCP stdio server",
+  "live_slow: long-running or high-pressure live acceptance test",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+]

@@ -1,0 +1,65 @@
+{
+  "schema": "agy.review.v1",
+  "verdict": "rejected",
+  "branch_base": "0c03a3d",
+  "change_sources": "Committed changes in branch codex/interactive-tmux-release and main since commit 0c03a3d (Release v0.1.7). Working tree is clean with no staged, unstaged, or untracked changes.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/codex_agy_bridge/janitor.py",
+      "line": 124,
+      "impact": "The janitor cannot clean up dead or stalled runs in the `cancel_requested` status. When attempting to reap a run where both processes are dead but the status is `cancel_requested`, the janitor attempts to transition the status to `failed`. However, the lifecycle rules in `run_lifecycle.py` restrict `cancel_requested` to only transition to `canceled`. As a result, the state update is ignored, the run remains in `cancel_requested` active status forever, leaking resources and causing infinite retries in subsequent janitor sweeps.",
+      "confidence": "high"
+    },
+    {
+      "severity": "medium",
+      "file": "src/codex_agy_bridge/supervision.py",
+      "line": 443,
+      "impact": "The supervisor immediately returns `True` (stable) as soon as the completion marker is seen in the response, updating `self.marker_seen_at` but never actually checking the elapsed time. This bypasses any stability delay/grace period intended for marker-based completion, which could prematurely terminate the agent before it finishes writing other files or performing final cleanup.",
+      "confidence": "high"
+    },
+    {
+      "severity": "low",
+      "file": "src/codex_agy_bridge/janitor.py",
+      "line": 70,
+      "impact": "If `self.store.get_run(run_id)` throws any transient error (e.g. file lock timeout, temporary disk read failure, or state validation issue), the janitor aggressively unlinks the active sentinel registry file from disk. This permanently untracks the run from the janitor's queue, preventing it from ever being cleaned up or monitored by the janitor again.",
+      "confidence": "high"
+    },
+    {
+      "severity": "low",
+      "file": "src/codex_agy_bridge/runner.py",
+      "line": 123,
+      "impact": "The function `terminate_process_group` is defined but never called in the codebase. Similarly, the `COMPLETION_STABILITY_SECONDS` variable is defined but never referenced. This dead code clutter increases maintenance overhead and may confuse developers.",
+      "confidence": "high"
+    }
+  ],
+  "blockers": [],
+  "files_inspected": [
+    "src/codex_agy_bridge/run_lifecycle.py",
+    "src/codex_agy_bridge/supervision.py",
+    "src/codex_agy_bridge/janitor.py",
+    "src/codex_agy_bridge/state.py",
+    "src/codex_agy_bridge/store.py",
+    "src/codex_agy_bridge/process.py",
+    "src/codex_agy_bridge/execution.py",
+    "src/codex_agy_bridge/runner.py",
+    "src/codex_agy_bridge/terminal.py",
+    "src/codex_agy_bridge/review.py",
+    "tests/test_supervision.py",
+    "tests/test_janitor.py",
+    "tests/test_review.py"
+  ],
+  "commands_run": [
+    "git status",
+    "git branch -a",
+    "git log -n 10 --oneline",
+    "git log origin/main..codex/interactive-tmux-release --oneline",
+    "git log origin/main..improve-long-running-review-wait-ux --oneline",
+    "git branch -vv",
+    "git log -n 5 --parents --oneline",
+    "git log 0c03a3d..9f123bb --oneline",
+    "git diff 0c03a3d..9f123bb -- src/codex_agy_bridge/run_lifecycle.py src/codex_agy_bridge/supervision.py src/codex_agy_bridge/janitor.py",
+    "git diff --name-only 0c03a3d..9f123bb",
+    "pytest"
+  ]
+}

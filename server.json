@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.varadfromeast/codex-agy-bridge",
+  "title": "Async Parallel Antigravity for Codex & Claude Code",
+  "description": "Run parallel, resumable, human-operable Antigravity CLI sessions from any MCP agent harness",
+  "repository": {
+    "url": "https://github.com/varadfromeast/codex-agy-bridge",
+    "source": "github"
+  },
+  "version": "0.1.12",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "codex-agy-bridge",
+      "version": "0.1.12",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AGY_CMD",
+          "description": "Absolute path to the authenticated Antigravity CLI executable",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

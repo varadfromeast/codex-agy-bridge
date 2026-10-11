@@ -1,0 +1,54 @@
+{
+  "schema": "agy.review.v1",
+  "verdict": "accepted",
+  "branch_base": "0c03a3d",
+  "change_sources": "Committed branch changes in main since commit 0c03a3d (Release v0.1.7). Working tree is clean.",
+  "findings": [
+    {
+      "severity": "advisory",
+      "file": "pyproject.toml",
+      "line": 34,
+      "impact": "Development dependencies are split between standard optional-dependencies (pytest, ruff) and PEP 735 dependency-groups (mypy). Developers setting up the project using standard pip tools (e.g., `pip install -e .[dev]`) will not have `mypy` installed, causing inconsistencies in local validation tool availability.",
+      "confidence": "high",
+      "message": "Dev dependencies are split. `mypy` is declared under `[dependency-groups]` while `pytest` and `ruff` are under `[project.optional-dependencies]`. Standard pip installations do not automatically pull in PEP 735 dependency groups."
+    },
+    {
+      "severity": "minor",
+      "file": "src/codex_agy_bridge/terminal.py",
+      "line": 204,
+      "impact": "The terminal supervisor executes tmux commands by calling the binary name 'tmux' directly. If the PATH of the MCP parent process does not include the directory where tmux is installed (such as /opt/homebrew/bin/tmux on Apple Silicon Macs), tmux execution will fail with FileNotFoundError, even if the doctor diagnostics successfully find tmux via shutil.which.",
+      "confidence": "high",
+      "message": "Subprocess calls in terminal.py hardcode 'tmux' instead of using a resolved absolute path. Resolving 'tmux' via shutil.which('tmux') and using the absolute path would harden execution across different shell and application host environments."
+    }
+  ],
+  "blockers": [],
+  "files_inspected": [
+    "pyproject.toml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/publish.yml",
+    "README.md",
+    "tests/conftest.py",
+    "tests/test_cli.py",
+    "tests/test_v1_live.py",
+    "tests/test_v1_soak_live.py",
+    "src/codex_agy_bridge/cli.py",
+    "src/codex_agy_bridge/terminal.py",
+    "src/codex_agy_bridge/diagnostics.py"
+  ],
+  "commands_run": [
+    "git status",
+    "git branch -a",
+    "git log -n 10 --oneline",
+    "git log --graph --oneline --all -n 30",
+    "git show-ref --heads",
+    "git diff --name-status 0c03a3d..9f123bb",
+    "git diff 0c03a3d..9f123bb -- pyproject.toml .github README.md",
+    "curl -sI https://github.com/modelcontextprotocol/registry/releases/latest",
+    "curl -sL https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz -I",
+    "uv run pytest",
+    "uv run ruff check .",
+    "uv run pytest -m \"not live and not live_slow\"",
+    "curl -sI https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "git diff 0c03a3d..main -- server.json"
+  ]
+}

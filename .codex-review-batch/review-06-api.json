@@ -1,0 +1,58 @@
+{
+  "schema": "agy.review.v1",
+  "verdict": "accepted",
+  "findings": [
+    {
+      "severity": "medium",
+      "file": "src/codex_agy_bridge/server.py",
+      "line": 181,
+      "impact": "Clients passing the structured cursor dictionary returned by agy_run_observe (from runs[run_id]['cursor']) to agy_run_wait's 'after' parameter will trigger a Pydantic ValidationError because agy_run_wait strictly expects a dict[str, str]. This breaks cursor compatibility between observation and wait tools.",
+      "confidence": "high"
+    },
+    {
+      "severity": "low",
+      "file": "src/codex_agy_bridge/review.py",
+      "line": 299,
+      "impact": "validate_artifact does not check if the elements inside the 'findings' array are dictionaries or match the expected finding schema. A review artifact with malformed finding elements (e.g. strings instead of objects) will pass validation with valid=True and verdict=completed without any errors.",
+      "confidence": "high"
+    },
+    {
+      "severity": "low",
+      "file": "src/codex_agy_bridge/_orchestrator.py",
+      "line": 118,
+      "impact": "If an integer event cursor is supplied in the 'after' parameter of agy_run_observe, _observe_cursor silently discards it and treats it as None (starting events from the beginning) instead of stringifying or raising a validation error.",
+      "confidence": "high"
+    },
+    {
+      "severity": "low",
+      "file": "src/codex_agy_bridge/_orchestrator.py",
+      "line": 89,
+      "impact": "Configuring AGY_BRIDGE_MAX_PARALLEL to a value greater than DEFAULT_MAX_PARALLEL (50) silently caps it to 50 instead of raising a ValueError, despite the ValueError message stating that the value must be between 1 and DEFAULT_MAX_PARALLEL.",
+      "confidence": "high"
+    }
+  ],
+  "blockers": [],
+  "files_inspected": [
+    "src/codex_agy_bridge/server.py",
+    "src/codex_agy_bridge/_orchestrator.py",
+    "src/codex_agy_bridge/harness_contract.py",
+    "src/codex_agy_bridge/waiter.py",
+    "src/codex_agy_bridge/session_events.py",
+    "src/codex_agy_bridge/run_request.py",
+    "src/codex_agy_bridge/run_input_delivery.py",
+    "src/codex_agy_bridge/run_control_snapshot.py",
+    "src/codex_agy_bridge/review.py"
+  ],
+  "commands_run": [
+    "git status",
+    "git branch -a",
+    "git log -n 20 --oneline --graph --all",
+    "git diff HEAD~5 --stat",
+    "git diff 0c03a3d..9f123bb --name-status",
+    "git diff 0c03a3d..9f123bb -- src/codex_agy_bridge/server.py",
+    "git diff 0c03a3d..9f123bb -- src/codex_agy_bridge/_orchestrator.py",
+    "git diff 0c03a3d..HEAD -- src/codex_agy_bridge/_orchestrator.py | head -n 250",
+    "git diff 0c03a3d..HEAD -- src/codex_agy_bridge/harness_contract.py",
+    "uv run pytest"
+  ]
+}

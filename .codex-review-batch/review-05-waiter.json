@@ -1,0 +1,54 @@
+{
+  "schema": "agy.review.v1",
+  "verdict": "rejected",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/codex_agy_bridge/harness_contract.py",
+      "line": 37,
+      "impact": "Calling harness will receive a validation error (TypeError: agy_run_observe() got an unexpected keyword argument 'run_id') when executing the suggested next tool after a progress stall, causing the harness to crash/fail.",
+      "confidence": "high",
+      "message": "terminal_observe_call constructs a ToolCall with the argument 'run_id', but the registered MCP tool agy_run_observe in server.py expects 'run_ids' (a list of strings). This mismatch makes the suggested tool call invalid. tests/test_supervision.py asserts this incorrect contract at lines 449-452."
+    },
+    {
+      "severity": "high",
+      "file": "src/codex_agy_bridge/waiter.py",
+      "line": 221,
+      "impact": "Stale/cleared attention events are matched and returned by wait_for_runs when condition='any_attention', waking up the calling harness prematurely with stale needs_attention events and causing potential wedges/loops.",
+      "confidence": "high",
+      "message": "_matching_events filters on ATTENTION_EVENTS, but attention suppression/clearing events (mcp_input_submitted, mcp_input_delivered, attention_cleared) are not in ATTENTION_EVENTS. Consequently, they are filtered out, and wait_for_runs can match and return older needs_attention events even after they have been resolved. No tests cover this suppression behavior inside wait_for_runs."
+    },
+    {
+      "severity": "low",
+      "file": "src/codex_agy_bridge/waiter.py",
+      "line": 524,
+      "impact": "Fragility in cursor tracking if the run ID key in run_dirs does not match the physical run directory name.",
+      "confidence": "high",
+      "message": "_next_after matches run_id from event.get('run_id') (which is run_dir.name) against run_ids keys of run_dirs. If they do not match, the cursor sequence updates are silently skipped."
+    }
+  ],
+  "blockers": [],
+  "files_inspected": [
+    "src/codex_agy_bridge/waiter.py",
+    "src/codex_agy_bridge/harness_contract.py",
+    "src/codex_agy_bridge/session_events.py",
+    "src/codex_agy_bridge/supervision.py",
+    "src/codex_agy_bridge/core.py",
+    "src/codex_agy_bridge/_orchestrator.py",
+    "src/codex_agy_bridge/run_control_snapshot.py",
+    "tests/test_waiter.py",
+    "tests/test_supervision.py",
+    "tests/test_run_control_snapshot.py"
+  ],
+  "commands_run": [
+    "git status",
+    "git branch -a && git log -n 15 --oneline",
+    "git log --graph --oneline --all -n 30",
+    "git log -p -n 5 src/codex_agy_bridge/waiter.py",
+    "git show 9f123bb",
+    "git diff 0c03a3d..9f123bb --stat",
+    "git diff 0c03a3d..9f123bb -- src/codex_agy_bridge/waiter.py src/codex_agy_bridge/harness_contract.py",
+    "pytest",
+    "ls -la /Users/varad/V/repo/codex-agy-bridge/.codex-review-batch"
+  ]
+}

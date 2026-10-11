@@ -1,0 +1,62 @@
+{
+  "schema": "agy.review.v1",
+  "verdict": "rejected",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/codex_agy_bridge/prompt_detector.py",
+      "line": 258,
+      "impact": "File-access approval prompts remain invisible to agy_run_wait and agy_goal(action=\"status\"), causing the calling harness to hang/wedge because it fails to detect that user attention is required.",
+      "confidence": "high",
+      "message": "PromptDetector._suffix_still_looks_like_active_prompt only matches options containing 'yes', 'y/n', or navigation commands. It does not match '1. Allow' or '2. Allow always' menus commonly shown for file-access permission prompts."
+    },
+    {
+      "severity": "medium",
+      "file": "src/codex_agy_bridge/run_request.py",
+      "line": 85,
+      "impact": "Calling harness will receive a ValueError when attempting to start a run with dangerously_skip_permissions=False, instead of the bridge dynamically overriding and persisting the parameter as True as stated in the context document.",
+      "confidence": "high",
+      "message": "Validation fails and raises a ValueError if dangerously_skip_permissions is not True, which conflicts with the requirement that dangerously_skip_permissions=False must be dynamically overridden and persisted as True."
+    },
+    {
+      "severity": "medium",
+      "file": "src/codex_agy_bridge/_orchestrator.py",
+      "line": 1237,
+      "impact": "Calling harness will receive a ValueError when attempting to start a goal with dangerously_skip_permissions=False, instead of the goal dynamically overriding and persisting the parameter as True.",
+      "confidence": "high",
+      "message": "Validation fails and raises a ValueError if dangerously_skip_permissions is not True, which conflicts with the requirement that dangerously_skip_permissions=False must be dynamically overridden and persisted as True."
+    }
+  ],
+  "blockers": [],
+  "files_inspected": [
+    "src/codex_agy_bridge/_orchestrator.py",
+    "src/codex_agy_bridge/cli.py",
+    "src/codex_agy_bridge/core.py",
+    "src/codex_agy_bridge/diagnostics.py",
+    "src/codex_agy_bridge/execution.py",
+    "src/codex_agy_bridge/expected_artifact.py",
+    "src/codex_agy_bridge/harness_contract.py",
+    "src/codex_agy_bridge/interactive_input.py",
+    "src/codex_agy_bridge/review.py",
+    "src/codex_agy_bridge/run_control_snapshot.py",
+    "src/codex_agy_bridge/run_lifecycle.py",
+    "src/codex_agy_bridge/run_results.py",
+    "src/codex_agy_bridge/runner.py",
+    "src/codex_agy_bridge/session_events.py",
+    "src/codex_agy_bridge/supervision.py",
+    "src/codex_agy_bridge/terminal.py",
+    "src/codex_agy_bridge/waiter.py",
+    "tests/test_prompt_detector.py",
+    "tests/test_review.py",
+    "tests/test_run_control_snapshot.py"
+  ],
+  "commands_run": [
+    "git status",
+    "git log -n 10 --oneline",
+    "git show 9f123bb --name-only",
+    "git diff --name-only 0c03a3d af246db",
+    "git log 0c03a3d..af246db --oneline",
+    "git show c574015 --stat",
+    "pytest"
+  ]
+}

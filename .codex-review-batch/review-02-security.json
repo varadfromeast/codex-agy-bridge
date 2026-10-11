@@ -1,0 +1,55 @@
+{
+  "schema": "agy.review.v1",
+  "verdict": "rejected",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/codex_agy_bridge/auth_flow.py",
+      "line": 119,
+      "impact": "Credential leakage. The individual authentication directory and the global auth root are created with default mkdir permissions (subject to loose system umasks) instead of owner-only permissions (0o700). Interactive terminal logs and OAuth sessions containing secrets/credentials can be read by other local users on shared systems.",
+      "confidence": "high",
+      "message": "The directories auth_root and run_dir are created using `.mkdir(parents=True, exist_ok=True)` at lines 42, 108, and 119, without specifying `mode=0o700` or using `core.ensure_private_directory`. OAuth links and sensitive authentication tokens written to log files in these directories are left accessible to other local users."
+    },
+    {
+      "severity": "medium",
+      "file": "src/codex_agy_bridge/auth_flow.py",
+      "line": 87,
+      "impact": "Local Denial of Service (DoS) and execution session disruption. A local user or untrusted agent with write access to metadata JSON files can specify an arbitrary tmux session name, causing the bridge to terminate that session and kill its descendant processes when closing sessions.",
+      "confidence": "high",
+      "message": "In `_close_visible_auth_sessions_unlocked`, `tmux_session` is read from persistent json files without validating that it matches the expected prefix/namespace (e.g. `agy-auth-`). It is then passed directly to `terminal.stop(session)` which kills all associated processes."
+    },
+    {
+      "severity": "medium",
+      "file": "src/codex_agy_bridge/server.py",
+      "line": 481,
+      "impact": "Exposure of server metadata (PIDs) and transient loose permissions on the state root. `STATE_ROOT` and the process registration directories are created with default umask-based permissions instead of owner-only permissions, exposing running process metadata to other local users.",
+      "confidence": "high",
+      "message": "In `server.py` line 481 and `lifecycle.py` line 19-21, `STATE_ROOT` and its subdirectories are created using `mkdir(parents=True, exist_ok=True)` without owner-only permissions. Process registration files are also written using standard `write_text` without setting 0o600 permissions."
+    }
+  ],
+  "blockers": [],
+  "files_inspected": [
+    "src/codex_agy_bridge/auth_flow.py",
+    "src/codex_agy_bridge/server.py",
+    "src/codex_agy_bridge/_orchestrator.py",
+    "src/codex_agy_bridge/core.py",
+    "src/codex_agy_bridge/terminal.py",
+    "src/codex_agy_bridge/run_request.py",
+    "src/codex_agy_bridge/labels.py",
+    "src/codex_agy_bridge/store.py",
+    "src/codex_agy_bridge/review.py",
+    "src/codex_agy_bridge/lifecycle.py",
+    "src/codex_agy_bridge/run_input_delivery.py",
+    "tests/test_review.py"
+  ],
+  "commands_run": [
+    "git status",
+    "git log -n 5 --oneline",
+    "git log --oneline --graph --all -n 20",
+    "git log 0c03a3d..main --oneline",
+    "git diff 0c03a3d..main -- src/codex_agy_bridge/_orchestrator.py",
+    "git diff 0c03a3d..main -- src/codex_agy_bridge/auth_flow.py",
+    "git diff 0c03a3d..main -- src/codex_agy_bridge/server.py",
+    "git branch -a"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "schema": "agy.review.v1",
+  "verdict": "rejected",
+  "branch_base": "0c03a3d",
+  "change_sources": "Committed branch changes in branch codex/interactive-tmux-release and main since commit 0c03a3d (Release v0.1.7). Working tree is clean with no staged, unstaged, or untracked changes.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/codex_agy_bridge/supervision.py",
+      "line": 622,
+      "impact": "Falsely ignores genuine completion markers in short outputs. The helper function `_marker_is_echoed_task_prompt` parses the last 12 lines of text preceding the completion marker to detect and ignore the marker from the echoed task prompt. If the model's actual response is short (fewer than 12 lines total since the task packet's completion marker line), the echoed prompt's 'Completion marker:' header remains in the last 12 lines, causing the helper to return `True`. This causes the supervisor to ignore the model's genuine completion marker in short runs, leading to runs hanging until timeout or exit.",
+      "confidence": "high"
+    },
+    {
+      "severity": "medium",
+      "file": "tests/test_supervision.py",
+      "line": 951,
+      "impact": "Missing integration/coverage test. The test suite does not contain any tests combining a fully formatted task packet (using the standard task envelope returned by `format_task_packet`) followed by actual model terminal responses (especially short ones). Because the test cases for echoed prompt markers either lack the full task packet formatting or lack model responses altogether, the false positive bug in completion detection went undetected.",
+      "confidence": "high"
+    }
+  ],
+  "blockers": [],
+  "files_inspected": [
+    "src/codex_agy_bridge/supervision.py",
+    "src/codex_agy_bridge/task_packet.py",
+    "src/codex_agy_bridge/review.py",
+    "src/codex_agy_bridge/expected_artifact.py",
+    "src/codex_agy_bridge/cli.py",
+    "src/codex_agy_bridge/execution.py",
+    "src/codex_agy_bridge/store.py",
+    "src/codex_agy_bridge/run_lifecycle.py",
+    "src/codex_agy_bridge/_orchestrator.py",
+    "tests/test_cli.py",
+    "tests/test_core.py",
+    "tests/test_execution.py",
+    "tests/test_orchestration.py",
+    "tests/test_orchestrator.py",
+    "tests/test_review.py",
+    "tests/test_run_control_snapshot.py",
+    "tests/test_run_request.py",
+    "tests/test_runner.py",
+    "tests/test_session_events.py",
+    "tests/test_store.py",
+    "tests/test_stress_round1.py",
+    "tests/test_stress_round2.py",
+    "tests/test_supervision.py",
+    "tests/test_terminal.py"
+  ],
+  "commands_run": [
+    "git status",
+    "git log -n 10 --oneline",
+    "git branch -a",
+    "git log -n 5 --stat",
+    "git log -n 15 --graph --oneline",
+    "pytest",
+    "git diff --name-only 0c03a3d..HEAD -- tests/",
+    "git diff 0c03a3d..HEAD -- tests/test_supervision.py",
+    "git diff 0c03a3d..HEAD -- src/codex_agy_bridge/supervision.py",
+    "git diff 0c03a3d..HEAD -- src/codex_agy_bridge/review.py",
+    "git diff 0c03a3d..HEAD -- src/codex_agy_bridge/run_lifecycle.py",
+    "git diff 0c03a3d..HEAD -- src/codex_agy_bridge/_orchestrator.py",
+    "python -c '...' (tested _marker_is_echoed_task_prompt with short outputs)"
+  ]
+}
